@@ -9,5 +9,10 @@ export async function ask(systemPrompt, userPrompt, maxTokens = 2000) {
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
   })
+  if (message.stop_reason === 'max_tokens') {
+    console.error(
+      `Claude response was truncated at max_tokens=${maxTokens} — output is incomplete. Raise max_tokens.`
+    )
+  }
   return message.content[0].text
 }
