@@ -53,6 +53,14 @@ export async function fetchFileContent(repo, filePath, ref) {
   return Buffer.from(data.content, 'base64').toString('utf-8')
 }
 
+export async function fetchDirectoryListing(repo, dirPath, ref) {
+  const url = `${API_BASE}/repos/${repo}/contents/${dirPath}?ref=${encodeURIComponent(ref)}`
+  const res = await request(url, { headers: { Accept: 'application/vnd.github+json' } })
+  const data = await res.json()
+  if (!Array.isArray(data)) return []
+  return data.filter((entry) => entry.type === 'file').map((entry) => entry.path)
+}
+
 export async function postComment(repo, prNumber, body) {
   await request(`${API_BASE}/repos/${repo}/issues/${prNumber}/comments`, {
     method: 'POST',

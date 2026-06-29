@@ -69,7 +69,7 @@ gh repo list UX-HOVER --json name -q '.[].name' | xargs -I{} \
 | PR diff | 80k chars (description) / 60k chars (QA) |
 | Single related file (QA) | 8k chars |
 | Total related files context (QA) | 30k chars |
-| Claude response | 2000 tokens (description) / 3000 tokens (QA) |
+| Claude response | 2000 tokens (description) / 4000 tokens (QA) |
 
 ## Local development
 
