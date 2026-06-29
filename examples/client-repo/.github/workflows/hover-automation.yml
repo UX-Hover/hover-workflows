@@ -1,0 +1,15 @@
+name: Hover PR Automation
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  pr-description:
+    uses: UX-HOVER/hover-workflows/.github/workflows/pr-description.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  pr-qa:
+    uses: UX-HOVER/hover-workflows/.github/workflows/pr-qa.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
