@@ -38,14 +38,30 @@ minutes and a consistent environment; no inbound ports are opened.
 
 ## Onboarding a new client repo
 
-1. Copy `examples/client-repo/.github/workflows/hover-automation.yml` into the client repo at the
-   same path.
-2. Add the `ANTHROPIC_API_KEY` secret to the client repo: Settings → Secrets and variables →
-   Actions → New repository secret.
-3. Create the labels `description`, `ready for qa`, and `qa-generated` in the client repo (or
-   bulk-create across repos via the GitHub API/CLI).
+**If the client repo is inside the `UX-Hover` org:**
 
-To bulk-add the secret across many repos:
+1. Copy `examples/client-repo/.github/workflows/hover-automation.yml` into the client repo at the
+   same path. It calls this repo's reusable workflows via `workflow_call`.
+2. Add the `ANTHROPIC_API_KEY` secret to the client repo.
+3. Create the labels `description`, `ready for qa`, and `qa-generated`.
+
+**If the client repo is in a different org/account (e.g. a client-owned repo):**
+
+`workflow_call` only works between repos in the same org (or same enterprise account), so a
+private reusable workflow can't be called cross-org. Use the standalone template instead — it
+checks out this repo's scripts directly via a token rather than calling a reusable workflow, so
+the central logic still lives in one place.
+
+1. Copy `examples/client-repo-cross-org/.github/workflows/hover-automation.yml` into the client
+   repo at the same path.
+2. Create a fine-grained Personal Access Token scoped to **read-only access on this repo only**
+   (`UX-Hover/hover-workflows`): GitHub → Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → select repository → Contents: Read-only.
+3. Add that token to the client repo as a secret named `HOVER_WORKFLOWS_TOKEN`.
+4. Add the `ANTHROPIC_API_KEY` secret to the client repo.
+5. Create the labels `description`, `ready for qa`, and `qa-generated`.
+
+To bulk-add `ANTHROPIC_API_KEY` across many same-org repos:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
