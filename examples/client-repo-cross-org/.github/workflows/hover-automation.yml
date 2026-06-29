@@ -6,7 +6,7 @@ on:
 jobs:
   pr-description:
     if: github.event.label.name == 'description'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: read
@@ -35,7 +35,7 @@ jobs:
 
   pr-qa:
     if: github.event.label.name == 'ready for qa'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: read

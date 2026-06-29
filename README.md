@@ -52,6 +52,13 @@ private reusable workflow can't be called cross-org. Use the standalone template
 checks out this repo's scripts directly via a token rather than calling a reusable workflow, so
 the central logic still lives in one place.
 
+This template also runs on `runs-on: ubuntu-latest` (GitHub-hosted) rather than `self-hosted`.
+Our self-hosted runner is registered under the `UX-Hover` org and has no visibility into other
+orgs — a job with `runs-on: self-hosted` on a cross-org repo will queue forever and silently time
+out, since no matching runner will ever pick it up. GitHub-hosted runners work immediately and
+cost the *client repo's own* Actions minutes, not ours — fine, since the scripts only read via the
+GitHub API and don't depend on local disk access.
+
 1. Copy `examples/client-repo-cross-org/.github/workflows/hover-automation.yml` into the client
    repo at the same path.
 2. Create a fine-grained Personal Access Token scoped to **read-only access on this repo only**
