@@ -11,7 +11,7 @@ called by every client repo via `workflow_call`.
 ## Repo layout
 
 ```
-UX-HOVER/hover-workflows/          ← this repo
+UX-Hover/hover-workflows/          ← this repo
 ├── .github/workflows/
 │   ├── pr-description.yml         ← reusable workflow (workflow_call) — same-org repos only
 │   └── pr-qa.yml                  ← reusable workflow (workflow_call) — same-org repos only
@@ -173,8 +173,8 @@ To bulk-add `ANTHROPIC_API_KEY` across many same-org repos:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-gh repo list UX-HOVER --json name -q '.[].name' | xargs -I{} \
-  gh secret set ANTHROPIC_API_KEY --repo UX-HOVER/{} --body "$ANTHROPIC_API_KEY"
+gh repo list UX-Hover --json name -q '.[].name' | xargs -I{} \
+  gh secret set ANTHROPIC_API_KEY --repo UX-Hover/{} --body "$ANTHROPIC_API_KEY"
 ```
 
 ### Troubleshooting checklist (either case)
@@ -188,7 +188,7 @@ If no run appears at all after labeling a PR:
    that's itself a signal: org-level policy may be blocking Actions and only an org owner can
    see/change it.
 4. (Case 1 only) Confirm the runner shows **Idle** at
-   `github.com/orgs/UX-HOVER/settings/actions/runners`.
+   `github.com/orgs/UX-Hover/settings/actions/runners`.
 5. (Case 2 only) Confirm `runs-on: ubuntu-latest`, not `self-hosted` — our runner has no
    visibility outside the `UX-Hover` org and a `self-hosted` job there will queue forever and
    silently time out with no error.
@@ -228,14 +228,14 @@ GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 HEAD_REF=my-b
 
 ## Runner setup (VPS)
 
-Org-level self-hosted runner for `UX-HOVER`, installed under the `mehdi` user's home directory.
-Get a registration token from `github.com/orgs/UX-HOVER/settings/actions/runners` → New runner.
+Org-level self-hosted runner for `UX-Hover`, installed under the `mehdi` user's home directory.
+Get a registration token from `github.com/orgs/UX-Hover/settings/actions/runners` → New runner.
 
 ```bash
 mkdir -p /home/mehdi/actions-runner && cd /home/mehdi/actions-runner
 curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/download/v2.317.0/actions-runner-linux-x64-2.317.0.tar.gz
 tar xzf ./actions-runner-linux-x64.tar.gz
-./config.sh --url https://github.com/UX-HOVER --token RUNNER_TOKEN_FROM_GITHUB
+./config.sh --url https://github.com/UX-Hover --token RUNNER_TOKEN_FROM_GITHUB
 sudo ./svc.sh install mehdi
 sudo ./svc.sh start
 ```

@@ -16,7 +16,7 @@ jobs:
       - name: Checkout central workflows repo
         uses: actions/checkout@v4
         with:
-          repository: UX-HOVER/hover-workflows
+          repository: UX-Hover/hover-workflows
           path: .hover-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 

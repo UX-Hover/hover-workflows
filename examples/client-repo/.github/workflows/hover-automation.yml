@@ -5,11 +5,11 @@ on:
 
 jobs:
   pr-description:
-    uses: UX-HOVER/hover-workflows/.github/workflows/pr-description.yml@main
+    uses: UX-Hover/hover-workflows/.github/workflows/pr-description.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
   pr-qa:
-    uses: UX-HOVER/hover-workflows/.github/workflows/pr-qa.yml@main
+    uses: UX-Hover/hover-workflows/.github/workflows/pr-qa.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
