@@ -213,7 +213,7 @@ error (check `permissions:` in the workflow file grants `pull-requests: write`).
 | PR diff | 80k chars (description) / 60k chars (QA) |
 | Single related file (QA) | 8k chars |
 | Total related files context (QA) | 30k chars |
-| Claude response | 2000 tokens (description) / 8000 tokens (QA) |
+| Claude response | 2000 tokens (description) / 16000 tokens (QA) |
 
 ## Local development
 

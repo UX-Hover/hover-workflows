@@ -313,7 +313,7 @@ async function main() {
 
   let qaComment
   try {
-    qaComment = await ask(systemPrompt, userPrompt, 8000)
+    qaComment = await ask(systemPrompt, userPrompt, 16000)
     if (!qaComment || !qaComment.trim()) {
       throw new Error('empty response')
     }
