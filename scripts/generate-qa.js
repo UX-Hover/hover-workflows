@@ -322,7 +322,7 @@ async function main() {
     await postComment(
       REPO,
       PR_NUMBER,
-      'QA generation failed — please add steps manually.'
+      'La génération QA a échoué — merci d’ajouter les étapes manuellement.'
     )
     await addLabel(REPO, PR_NUMBER, 'qa-generated')
     console.log(`QA generation failed, fallback comment posted for ${REPO}#${PR_NUMBER}`)
