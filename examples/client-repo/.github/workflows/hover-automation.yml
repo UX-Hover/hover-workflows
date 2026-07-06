@@ -12,6 +12,14 @@ jobs:
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
+  pr-qa-human:
+    permissions:
+      pull-requests: write
+      contents: read
+    uses: UX-Hover/hover-workflows/.github/workflows/pr-qa-human.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
   pr-qa:
     permissions:
       pull-requests: write

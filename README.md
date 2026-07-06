@@ -3,7 +3,8 @@
 Central GitHub Actions automation for Hover PRs, running on a self-hosted runner.
 
 - Add label `description` to a PR → its body is auto-generated from the diff.
-- Add label `ready for qa` to a PR → a QA comment (human checklist + QA bot YAML) is posted.
+- Add label `ready for human qa` to a PR → a comment with the exhaustive human QA checklist is posted.
+- Add label `ready for qa` to a PR → a comment with the QA bot YAML instructions is posted.
 
 No web server, no database, no Docker. GitHub Actions is the runtime; logic lives here and is
 called by every client repo via `workflow_call`.
@@ -14,16 +15,20 @@ called by every client repo via `workflow_call`.
 UX-Hover/hover-workflows/          ← this repo
 ├── .github/workflows/
 │   ├── pr-description.yml         ← reusable workflow (workflow_call) — same-org repos only
+│   ├── pr-qa-human.yml            ← reusable workflow (workflow_call) — same-org repos only
 │   └── pr-qa.yml                  ← reusable workflow (workflow_call) — same-org repos only
 ├── scripts/
 │   ├── generate-description.js
-│   ├── generate-qa.js
+│   ├── generate-qa-human.js
+│   ├── generate-qa-bot.js
 │   └── lib/
 │       ├── github.js              ← GitHub REST API calls (native fetch)
-│       └── claude.js              ← Claude API wrapper
+│       ├── claude.js              ← Claude API wrapper
+│       └── qa-context.js          ← shared PR/diff/schema/metafield/template gathering
 ├── prompts/
 │   ├── description.md
-│   └── qa.md
+│   ├── qa-human.md
+│   └── qa-bot.md
 ├── examples/client-repo/.github/workflows/hover-automation.yml             ← same-org caller
 └── examples/client-repo-cross-org/.github/workflows/hover-automation.yml   ← cross-org caller
 ```
@@ -36,10 +41,11 @@ the only thing that differs.
 
 ## How it works, end to end
 
-Both cases start the same way: a human adds the label `description` or `ready for qa` to a PR on
-a client repo. GitHub fires a `pull_request` `labeled` event. From there, the two cases diverge
-in **where the job runs** and **how it gets the scripts** — everything after that (which script
-runs, what it does, what it posts back) is identical.
+Both cases start the same way: a human adds one of the three labels
+(`description`, `ready for human qa`, `ready for qa`) to a PR on a client repo. GitHub fires a
+`pull_request` `labeled` event. From there, the two cases diverge in **where the job runs** and
+**how it gets the scripts** — everything after that (which script runs, what it does, what it
+posts back) is identical.
 
 ### Case 1 — client repo lives inside the `UX-Hover` org
 
@@ -71,10 +77,17 @@ to remove "description" so it can't re-trigger itself
 PR body is updated. Done — no human ever leaves the PR page.
 ```
 
-The `ready for qa` path is identical except: it triggers `pr-qa.yml`, runs
-`generate-qa.js` (which additionally fetches changed files, related snippets, section
-schemas, metafield references, and templates — see "Limits" below), and ends by
-posting a comment and adding the `qa-generated` label instead of editing the PR body.
+The two QA paths share the same context-gathering step (`scripts/lib/qa-context.js` fetches
+changed files, related snippets, section schemas, metafield references, and templates — see
+"Limits" below) but produce two separate comments, triggered independently:
+
+- `ready for human qa` → triggers `pr-qa-human.yml`, runs `generate-qa-human.js`, posts the
+  `👤 Checklist QA humaine` comment, adds the `human-qa-generated` label.
+- `ready for qa` → triggers `pr-qa.yml`, runs `generate-qa-bot.js`, posts the
+  `🤖 Instructions QA Bot` YAML comment, adds the `qa-generated` label.
+
+Both can be added to the same PR independently, in any order — each only ever posts its own
+comment and only ever touches its own label.
 
 **Why this works:** `workflow_call` (a "reusable workflow") is GitHub's mechanism for one repo
 to invoke a workflow defined in another repo, but it only resolves if the called repo is private
@@ -138,7 +151,8 @@ the `HOVER_WORKFLOWS_TOKEN` PAT, which exists only to read `hover-workflows`.
    path: `.github/workflows/hover-automation.yml`.
 2. Add secret `ANTHROPIC_API_KEY` to the client repo (Settings → Secrets and variables →
    Actions → New repository secret).
-3. Create labels `description`, `ready for qa`, `qa-generated` on the client repo.
+3. Create labels `description`, `ready for human qa`, `ready for qa`, `human-qa-generated`,
+   `qa-generated` on the client repo.
 4. Open a PR, add the `description` label, confirm a run appears under the repo's Actions tab
    and the PR body updates within ~30s.
 
@@ -158,7 +172,8 @@ shared infrastructure.
    `hover-workflows`.
 3. Add that token to the **client repo** as a secret named `HOVER_WORKFLOWS_TOKEN`.
 4. Add secret `ANTHROPIC_API_KEY` to the client repo (separate from the PAT above).
-5. Create labels `description`, `ready for qa`, `qa-generated` on the client repo.
+5. Create labels `description`, `ready for human qa`, `ready for qa`, `human-qa-generated`,
+   `qa-generated` on the client repo.
 6. Confirm GitHub Actions is actually enabled for that repo/org —
    Settings → Actions → General → "Actions permissions" should allow running workflows. This is
    sometimes locked at the org level and only visible to an org owner on the client's side, not
@@ -203,8 +218,13 @@ error (check `permissions:` in the workflow file grants `pull-requests: write`).
 | Label | Triggers | Added after | Removed after |
 |---|---|---|---|
 | `description` | PR description generation | — | ✅ after generation (prevents re-trigger loop) |
-| `ready for qa` | QA steps generation | — | kept — human removes once QA is done |
-| `qa-generated` | downstream signal | ✅ after QA comment posted | — |
+| `ready for human qa` | Human QA checklist generation | — | kept — human removes once QA is done |
+| `ready for qa` | QA bot instructions generation | — | kept — human removes once QA is done |
+| `human-qa-generated` | downstream signal | ✅ after human checklist comment posted | — |
+| `qa-generated` | downstream signal | ✅ after QA bot comment posted | — |
+
+`ready for human qa` and `ready for qa` are independent — add either, both, or neither. Each only
+posts its own comment and only touches its own downstream label.
 
 ## Limits
 
@@ -213,7 +233,7 @@ error (check `permissions:` in the workflow file grants `pull-requests: write`).
 | PR diff | 80k chars (description) / 60k chars (QA) |
 | Single related file (QA) | 8k chars |
 | Total related files context (QA) | 30k chars |
-| Claude response | 2000 tokens (description) / 16000 tokens (QA) |
+| Claude response | 2000 tokens (description) / 16000 tokens (human QA / bot QA) |
 
 ## Local development
 
@@ -223,7 +243,10 @@ GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 \
   node scripts/generate-description.js
 
 GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 HEAD_REF=my-branch \
-  node scripts/generate-qa.js
+  node scripts/generate-qa-human.js
+
+GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 HEAD_REF=my-branch \
+  node scripts/generate-qa-bot.js
 ```
 
 ## Runner setup (VPS)

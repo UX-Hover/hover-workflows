@@ -1,18 +1,4 @@
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
-import {
-  fetchPR,
-  fetchDiff,
-  fetchChangedFiles,
-  fetchFileContent,
-  fetchDirectoryListing,
-  postComment,
-  addLabel,
-} from './lib/github.js'
-import { ask } from './lib/claude.js'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+import { fetchFileContent, fetchDirectoryListing } from './github.js'
 
 const DIFF_LIMIT = 60_000
 const SINGLE_FILE_LIMIT = 8_000
@@ -226,24 +212,11 @@ function capRelatedFiles(related) {
 }
 
 function buildRelatedFilesContext(entries) {
-  return entries
-    .map((e) => `--- ${e.filePath} ---\n${e.content}`)
-    .join('\n\n')
+  return entries.map((e) => `--- ${e.filePath} ---\n${e.content}`).join('\n\n')
 }
 
-async function main() {
-  const { REPO, PR_NUMBER, HEAD_REF } = process.env
-  if (!REPO || !PR_NUMBER || !HEAD_REF) {
-    throw new Error('Missing required env vars: REPO, PR_NUMBER, HEAD_REF')
-  }
-
-  const [pr, diff, changedFiles] = await Promise.all([
-    fetchPR(REPO, PR_NUMBER),
-    fetchDiff(REPO, PR_NUMBER),
-    fetchChangedFiles(REPO, PR_NUMBER),
-  ])
-
-  const related = await gatherRelatedFiles(REPO, changedFiles, HEAD_REF)
+export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
+  const related = await gatherRelatedFiles(repo, changedFiles, headRef)
   const cappedEntries = capRelatedFiles(related)
   const relatedFilesContext = buildRelatedFilesContext(cappedEntries)
 
@@ -259,7 +232,7 @@ async function main() {
   for (const ref of parseMetafieldReferences(diff)) metafieldRefs.add(ref)
 
   const sectionHandles = collectSectionHandles(changedFiles)
-  const templateMatches = await fetchTemplatesReferencingSections(REPO, sectionHandles, HEAD_REF)
+  const templateMatches = await fetchTemplatesReferencingSections(repo, sectionHandles, headRef)
   const templatesContext = templateMatches
     .map((m) =>
       m.viewSuffix
@@ -273,8 +246,6 @@ async function main() {
       ? `${diff.slice(0, DIFF_LIMIT)}\n\n[diff truncated at ${DIFF_LIMIT} chars]`
       : diff
 
-  const systemPrompt = await readFile(path.join(__dirname, '..', 'prompts', 'qa.md'), 'utf-8')
-
   const fileList = changedFiles
     .map((f) => `- ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`)
     .join('\n')
@@ -283,8 +254,8 @@ async function main() {
 
   const userPrompt = [
     `PR title: ${pr.title}`,
-    `PR number: ${PR_NUMBER}`,
-    `Head ref: ${HEAD_REF}`,
+    `PR number: ${prNumber}`,
+    `Head ref: ${headRef}`,
     `Timestamp: ${timestamp}`,
     '',
     'PR body:',
@@ -301,7 +272,7 @@ async function main() {
     'Related file context:',
     relatedFilesContext || '(none)',
     '',
-    'Section/block schema settings (extracted — enumerate every one of these in the human checklist):',
+    'Section/block schema settings (extracted — enumerate every one of these):',
     schemaSettingsContext || '(none found)',
     '',
     'Metafield/metaobject references detected in code (instruct tester how to verify empty/missing state for each):',
@@ -311,31 +282,5 @@ async function main() {
     templatesContext || '(none found — section may be new/unreferenced, or check manually)',
   ].join('\n')
 
-  let qaComment
-  try {
-    qaComment = await ask(systemPrompt, userPrompt, 16000)
-    if (!qaComment || !qaComment.trim()) {
-      throw new Error('empty response')
-    }
-  } catch (err) {
-    console.error('Claude QA generation failed:', err)
-    await postComment(
-      REPO,
-      PR_NUMBER,
-      'La génération QA a échoué — merci d’ajouter les étapes manuellement.'
-    )
-    await addLabel(REPO, PR_NUMBER, 'qa-generated')
-    console.log(`QA generation failed, fallback comment posted for ${REPO}#${PR_NUMBER}`)
-    return
-  }
-
-  await postComment(REPO, PR_NUMBER, qaComment)
-  await addLabel(REPO, PR_NUMBER, 'qa-generated')
-
-  console.log(`QA steps generated for ${REPO}#${PR_NUMBER}`)
+  return { userPrompt, timestamp }
 }
-
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})

@@ -33,6 +33,36 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
 
+  pr-qa-human:
+    if: github.event.label.name == 'ready for human qa'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Checkout central workflows repo
+        uses: actions/checkout@v4
+        with:
+          repository: UX-Hover/hover-workflows
+          path: .hover-workflows
+          token: ${{ secrets.HOVER_WORKFLOWS_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+        working-directory: .hover-workflows
+
+      - run: node scripts/generate-qa-human.js
+        working-directory: .hover-workflows
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
+
   pr-qa:
     if: github.event.label.name == 'ready for qa'
     runs-on: ubuntu-latest
@@ -54,7 +84,7 @@ jobs:
       - run: npm ci
         working-directory: .hover-workflows
 
-      - run: node scripts/generate-qa.js
+      - run: node scripts/generate-qa-bot.js
         working-directory: .hover-workflows
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

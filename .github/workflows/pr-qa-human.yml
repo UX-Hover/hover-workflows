@@ -1,4 +1,4 @@
-name: Generate PR QA Steps
+name: Generate PR Human QA Checklist
 on:
   workflow_call:
     secrets:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   generate:
-    if: github.event.label.name == 'ready for qa'
+    if: github.event.label.name == 'ready for human qa'
     runs-on: self-hosted
     permissions:
       pull-requests: write
@@ -32,7 +32,7 @@ jobs:
       - run: npm ci
         working-directory: .hover-workflows
 
-      - run: node scripts/generate-qa-bot.js
+      - run: node scripts/generate-qa-human.js
         working-directory: .hover-workflows
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
