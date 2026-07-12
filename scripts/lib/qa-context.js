@@ -153,6 +153,19 @@ async function fetchTemplatesReferencingSections(repo, sectionHandles, headRef) 
   return results
 }
 
+async function fetchQaSpecs(repo, headRef) {
+  let content
+  try {
+    content = await fetchFileContent(repo, 'project-specs.md', headRef)
+  } catch {
+    return null
+  }
+  for (const match of content.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
+    if (/^qa:/m.test(match[1])) return match[1].trim()
+  }
+  return null
+}
+
 async function gatherRelatedFiles(repo, changedFiles, headRef) {
   const related = new Map()
   const seenSnippetPaths = new Set()
@@ -216,6 +229,7 @@ function buildRelatedFilesContext(entries) {
 }
 
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
+  const qaSpecs = await fetchQaSpecs(repo, headRef)
   const related = await gatherRelatedFiles(repo, changedFiles, headRef)
   const cappedEntries = capRelatedFiles(related)
   const relatedFilesContext = buildRelatedFilesContext(cappedEntries)
@@ -260,6 +274,10 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     '',
     'PR body:',
     pr.body || '(empty)',
+    '',
+    'Test products and key pages from the `qa` block of project-specs.md (the ONLY allowed source for product handles and URLs — never invent a handle, never write a placeholder):',
+    qaSpecs ||
+      '(missing — do not write any step that requires a specific product; describe those checks in `regression` instead)',
     '',
     'Changed files:',
     fileList,
