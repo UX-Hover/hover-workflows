@@ -9,7 +9,8 @@ const URL_PLACEHOLDER_RE = /\[[\w-]+\]|\{[\w-]+\}/
 const SELECTOR_PLACEHOLDER_RE = /\[(section-id|block-id)\]|\{[\w-]+\}|\[[A-Z][^\]]*\]|\[[^\]"']*\s[^\]"']*\]/
 const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
 
-export function lintQaYaml(markdown) {
+export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
+  const allowed = new Set(allowedHandles)
   const fence = markdown.match(/```ya?ml\n([\s\S]*?)```/)
   if (!fence) return { errors: ['no fenced YAML block found in the output'] }
 
@@ -39,6 +40,13 @@ export function lintQaYaml(markdown) {
         errors.push(
           `${at}: placeholder in url "${step.url}" — use a real handle from the qa block of project-specs.md, or move the check to regression`
         )
+      } else if (allowed.size) {
+        const m = step.url.match(/\/products\/([\w.-]+)/)
+        if (m && !allowed.has(m[1])) {
+          errors.push(
+            `${at}: product handle "${m[1]}" is not in the qa block of project-specs.md — allowed handles: ${[...allowed].join(', ')}`
+          )
+        }
       }
     } else {
       if (!step.selector) {
