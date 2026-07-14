@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel } from './lib/github.js'
 import { buildQaUserPrompt } from './lib/qa-context.js'
+import { lintQaYaml } from './lib/lint-qa-yaml.js'
 import { ask } from './lib/claude.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -19,7 +20,7 @@ async function main() {
     fetchChangedFiles(REPO, PR_NUMBER),
   ])
 
-  const { userPrompt } = await buildQaUserPrompt({
+  const { userPrompt, allowedHandles } = await buildQaUserPrompt({
     repo: REPO,
     prNumber: PR_NUMBER,
     headRef: HEAD_REF,
@@ -46,6 +47,40 @@ async function main() {
     await addLabel(REPO, PR_NUMBER, 'qa-generated')
     console.log(`Bot QA generation failed, fallback comment posted for ${REPO}#${PR_NUMBER}`)
     return
+  }
+
+  let { errors } = lintQaYaml(botInstructions, { allowedHandles })
+  if (errors.length) {
+    console.log(`Lint failed (${errors.length} error(s)), retrying once with feedback`)
+    const retryPrompt = [
+      userPrompt,
+      '',
+      'Your previous output failed validation. Fix every error below and output the corrected YAML block (full output, same format):',
+      ...errors.map((e) => `- ${e}`),
+      '',
+      'Previous output:',
+      botInstructions,
+    ].join('\n')
+    botInstructions = await ask(systemPrompt, retryPrompt, 16000)
+    errors = lintQaYaml(botInstructions, { allowedHandles }).errors
+  }
+
+  if (errors.length) {
+    console.error('QA YAML failed lint after retry:')
+    for (const e of errors) console.error(`- ${e}`)
+    await postComment(
+      REPO,
+      PR_NUMBER,
+      [
+        ':warning: Instructions QA générées mais non conformes après relance : label `qa-generated` non posé, la QA automatique ne tournera pas sur ce YAML.',
+        '',
+        'Erreurs de validation :',
+        ...errors.map((e) => `- ${e}`),
+        '',
+        botInstructions,
+      ].join('\n')
+    )
+    process.exit(1)
   }
 
   await postComment(REPO, PR_NUMBER, botInstructions)

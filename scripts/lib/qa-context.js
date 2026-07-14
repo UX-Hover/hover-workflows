@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml'
 import { fetchFileContent, fetchDirectoryListing } from './github.js'
 
 const DIFF_LIMIT = 60_000
@@ -153,6 +154,59 @@ async function fetchTemplatesReferencingSections(repo, sectionHandles, headRef) 
   return results
 }
 
+async function fetchQaSpecs(repo, headRef) {
+  let content
+  try {
+    content = await fetchFileContent(repo, 'project-specs.md', headRef)
+  } catch {
+    return null
+  }
+  for (const match of content.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
+    if (!/^qa:/m.test(match[1])) continue
+    let parsed
+    try {
+      parsed = parseYaml(match[1])
+    } catch {
+      return null
+    }
+    const qa = parsed?.qa
+    if (!qa) return null
+    const products = Array.isArray(qa.products)
+      ? qa.products
+          .filter((p) => p && p.handle)
+          .map((p) => ({
+            handle: String(p.handle).trim(),
+            template: p.template ? String(p.template).trim() : 'default',
+          }))
+      : []
+    const pages =
+      qa.pages && typeof qa.pages === 'object'
+        ? Object.fromEntries(Object.entries(qa.pages).map(([k, v]) => [k, String(v).trim()]))
+        : {}
+    return { products, pages }
+  }
+  return null
+}
+
+function formatQaSpecs(specs) {
+  if (!specs || !specs.products.length) return null
+  const productLines = specs.products.map((p) => {
+    const tpl =
+      !p.template || p.template === 'default'
+        ? 'template produit par défaut (`templates/product.json`)'
+        : `template \`${p.template}\` (charger via \`?view=${p.template}\`)`
+    return `- \`/products/${p.handle}\` — ${tpl}`
+  })
+  const pageLines = Object.entries(specs.pages).map(([name, path]) => `- ${name}: ${path}`)
+  return [
+    'Test products — the ONLY valid product handles. Every `/products/...` URL MUST use one of these exact handles (the linter rejects any other). Each product is bound to a stable Shopify template (a product is assigned to one template and it does not change; what that template contains is NOT declared here — it is read from the branch code at run time):',
+    ...productLines,
+    '',
+    'Rule: a changed section only renders on products whose template includes it. To test a changed section, pick a test product whose template matches one of the templates listed under "Templates that reference changed sections" below — that is the only way to know the section will actually render. NEVER test a section on a product whose template does not contain it (it renders empty and produces false failures). If no test product uses a template that contains the changed section, move that check to `regression` instead of inventing a handle.',
+    ...(pageLines.length ? ['', 'Key pages (use these exact paths):', ...pageLines] : []),
+  ].join('\n')
+}
+
 async function gatherRelatedFiles(repo, changedFiles, headRef) {
   const related = new Map()
   const seenSnippetPaths = new Set()
@@ -216,6 +270,9 @@ function buildRelatedFilesContext(entries) {
 }
 
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
+  const qaSpecs = await fetchQaSpecs(repo, headRef)
+  const qaContext = formatQaSpecs(qaSpecs)
+  const allowedHandles = qaSpecs ? qaSpecs.products.map((p) => p.handle) : []
   const related = await gatherRelatedFiles(repo, changedFiles, headRef)
   const cappedEntries = capRelatedFiles(related)
   const relatedFilesContext = buildRelatedFilesContext(cappedEntries)
@@ -261,6 +318,10 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     'PR body:',
     pr.body || '(empty)',
     '',
+    'Test products and key pages from the `qa` block of project-specs.md (the ONLY allowed source for product handles and URLs — never invent a handle, never write a placeholder):',
+    qaContext ||
+      '(missing — do not write any step that requires a specific product; describe those checks in `regression` instead)',
+    '',
     'Changed files:',
     fileList,
     '',
@@ -282,5 +343,5 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     templatesContext || '(none found — section may be new/unreferenced, or check manually)',
   ].join('\n')
 
-  return { userPrompt, timestamp }
+  return { userPrompt, timestamp, allowedHandles }
 }
