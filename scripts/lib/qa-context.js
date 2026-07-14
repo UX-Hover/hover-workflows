@@ -154,13 +154,25 @@ async function fetchTemplatesReferencingSections(repo, sectionHandles, headRef) 
   return results
 }
 
-async function fetchQaSpecs(repo, headRef) {
-  let content
-  try {
-    content = await fetchFileContent(repo, 'project-specs.md', headRef)
-  } catch {
-    return null
+async function fetchQaSpecs(repo, headRef, baseRef) {
+  // project-specs.md is a repo-level contract maintained on the default branch.
+  // Read the head ref first (a PR may edit the specs), then fall back to base:
+  // most feature branches predate the specs commit and 404 on head.
+  const refs = baseRef && baseRef !== headRef ? [headRef, baseRef] : [headRef]
+  for (const ref of refs) {
+    let content
+    try {
+      content = await fetchFileContent(repo, 'project-specs.md', ref)
+    } catch {
+      continue
+    }
+    const parsed = parseQaSpecs(content)
+    if (parsed) return parsed
   }
+  return null
+}
+
+function parseQaSpecs(content) {
   // Candidate YAML regions, in priority order:
   // 1. any ```yaml fenced block (the documented canonical form)
   // 2. the unfenced tail starting at a top-level `qa:` line — the form the CROs
@@ -287,7 +299,7 @@ function buildRelatedFilesContext(entries) {
 }
 
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
-  const qaSpecs = await fetchQaSpecs(repo, headRef)
+  const qaSpecs = await fetchQaSpecs(repo, headRef, pr?.base?.ref)
   const qaContext = formatQaSpecs(qaSpecs)
   const allowedHandles = qaSpecs ? qaSpecs.products.map((p) => p.handle) : []
   const related = await gatherRelatedFiles(repo, changedFiles, headRef)
