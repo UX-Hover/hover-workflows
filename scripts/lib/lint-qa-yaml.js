@@ -65,5 +65,22 @@ export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
     }
   })
 
+  // Each regression entry must be a plain string. A ": " inside an unquoted list
+  // item makes YAML parse it as a mapping, which crashes the executor's
+  // regression pass (regText.match is not a function) after the steps have run.
+  if (doc.regression != null) {
+    if (!Array.isArray(doc.regression)) {
+      errors.push('`regression` must be a list of plain one-line strings')
+    } else {
+      doc.regression.forEach((r, i) => {
+        if (typeof r !== 'string') {
+          errors.push(
+            `regression[${i}]: must be a plain one-line string — a ": " made YAML parse it as a mapping; rephrase without ": " (use a dash) or quote the whole line`
+          )
+        }
+      })
+    }
+  }
+
   return { errors }
 }
