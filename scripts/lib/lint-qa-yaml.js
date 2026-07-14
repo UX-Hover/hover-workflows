@@ -8,6 +8,9 @@ const URL_PLACEHOLDER_RE = /\[[\w-]+\]|\{[\w-]+\}/
 // or any bracket containing an unquoted space (real CSS attribute selectors quote their values)
 const SELECTOR_PLACEHOLDER_RE = /\[(section-id|block-id)\]|\{[\w-]+\}|\[[A-Z][^\]]*\]|\[[^\]"']*\s[^\]"']*\]/
 const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
+// Absence assertions the bot can't reliably confirm in a step (only presence is
+// reliable) — route these to `regression` instead.
+const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(?:est|sont|apparai\w+)\s+(?:pas|plus)\b|\bne\s+(?:s'affiche\w*|doit|doivent|devrait\w*|sont)\s+(?:pas|plus)\b/i
 
 export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
   const allowed = new Set(allowedHandles)
@@ -61,6 +64,11 @@ export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
     if (CONDITIONAL_RE.test(freeText)) {
       errors.push(
         `${at}: conditional assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — split into two steps on two distinct products from the qa block`
+      )
+    }
+    if (ABSENCE_RE.test(freeText)) {
+      errors.push(
+        `${at}: absence assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — a step only reliably confirms presence; move any "should be absent/hidden/removed" check to regression`
       )
     }
   })
