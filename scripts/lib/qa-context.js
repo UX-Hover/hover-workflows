@@ -176,7 +176,7 @@ async function fetchQaSpecs(repo, headRef) {
           .filter((p) => p && p.handle)
           .map((p) => ({
             handle: String(p.handle).trim(),
-            has: Array.isArray(p.has) ? p.has.map((h) => String(h).trim()) : [],
+            template: p.template ? String(p.template).trim() : 'default',
           }))
       : []
     const pages =
@@ -191,15 +191,18 @@ async function fetchQaSpecs(repo, headRef) {
 function formatQaSpecs(specs) {
   if (!specs || !specs.products.length) return null
   const productLines = specs.products.map((p) => {
-    const feats = p.has.length ? p.has.join(', ') : '(aucune feature spécifique déclarée)'
-    return `- \`/products/${p.handle}\` — features testables : ${feats}`
+    const tpl =
+      !p.template || p.template === 'default'
+        ? 'template produit par défaut (`templates/product.json`)'
+        : `template \`${p.template}\` (charger via \`?view=${p.template}\`)`
+    return `- \`/products/${p.handle}\` — ${tpl}`
   })
   const pageLines = Object.entries(specs.pages).map(([name, path]) => `- ${name}: ${path}`)
   return [
-    'Test products — the ONLY valid product handles. Every `/products/...` URL MUST use one of these exact handles (the linter rejects any other):',
+    'Test products — the ONLY valid product handles. Every `/products/...` URL MUST use one of these exact handles (the linter rejects any other). Each product is bound to a stable Shopify template (a product is assigned to one template and it does not change; what that template contains is NOT declared here — it is read from the branch code at run time):',
     ...productLines,
     '',
-    'Rule: to test a feature, pick a product whose "features testables" list contains it. NEVER test a feature on a product that does not list it — the section renders empty and produces false failures. If no product lists the feature you want to test, move that check to `regression`.',
+    'Rule: a changed section only renders on products whose template includes it. To test a changed section, pick a test product whose template matches one of the templates listed under "Templates that reference changed sections" below — that is the only way to know the section will actually render. NEVER test a section on a product whose template does not contain it (it renders empty and produces false failures). If no test product uses a template that contains the changed section, move that check to `regression` instead of inventing a handle.',
     ...(pageLines.length ? ['', 'Key pages (use these exact paths):', ...pageLines] : []),
   ].join('\n')
 }
