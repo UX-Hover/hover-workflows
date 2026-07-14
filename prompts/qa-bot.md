@@ -53,3 +53,4 @@ Rules:
 - Only output the YAML block and the footer — no preamble, no closing remarks.
 - Human-readable string values inside the YAML are in French; field names and action keywords stay in English.
 - Be concrete. Every step names a real template, real selector (or explicit bracketed placeholder), or real breakpoint — never a vague assertion.
+- Each `regression` entry is a single plain-text line. NEVER put `": "` (a colon followed by a space) inside it — YAML would parse the line as a key/value mapping and the check breaks. Use a dash or a comma instead.
