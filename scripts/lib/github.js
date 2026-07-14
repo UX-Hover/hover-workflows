@@ -23,7 +23,12 @@ export async function fetchPR(repo, prNumber) {
     headers: { Accept: 'application/vnd.github+json' },
   })
   const data = await res.json()
-  return { title: data.title, body: data.body, head: { ref: data.head.ref } }
+  return {
+    title: data.title,
+    body: data.body,
+    head: { ref: data.head.ref },
+    base: { ref: data.base.ref },
+  }
 }
 
 export async function fetchDiff(repo, prNumber) {
