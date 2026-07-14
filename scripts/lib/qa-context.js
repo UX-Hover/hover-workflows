@@ -161,18 +161,34 @@ async function fetchQaSpecs(repo, headRef) {
   } catch {
     return null
   }
-  for (const match of content.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
-    if (!/^qa:/m.test(match[1])) continue
+  // Candidate YAML regions, in priority order:
+  // 1. any ```yaml fenced block (the documented canonical form)
+  // 2. the unfenced tail starting at a top-level `qa:` line — the form the CROs
+  //    actually commit (flat: `qa:` then `products:`/`pages:` at column 0, block
+  //    running to EOF or until the next markdown heading/table/fence)
+  const candidates = []
+  for (const match of content.matchAll(/```ya?ml\n([\s\S]*?)```/g)) candidates.push(match[1])
+  const bareIdx = content.search(/^qa:/m)
+  if (bareIdx !== -1) {
+    const lines = content.slice(bareIdx).split('\n')
+    const end = lines.findIndex((l, i) => i > 0 && /^(#{1,6}\s|\||```)/.test(l))
+    candidates.push((end === -1 ? lines : lines.slice(0, end)).join('\n'))
+  }
+
+  for (const raw of candidates) {
+    if (!/^qa:/m.test(raw)) continue
     let parsed
     try {
-      parsed = parseYaml(match[1])
+      parsed = parseYaml(raw)
     } catch {
-      return null
+      continue
     }
-    const qa = parsed?.qa
-    if (!qa) return null
-    const products = Array.isArray(qa.products)
-      ? qa.products
+    // Accept both nested (`qa:` holds products/pages) and flat (`qa:` is empty,
+    // products/pages sit at the top level) layouts.
+    const src = parsed && typeof parsed.qa === 'object' && parsed.qa ? parsed.qa : parsed
+    if (!src || (!Array.isArray(src.products) && typeof src.pages !== 'object')) continue
+    const products = Array.isArray(src.products)
+      ? src.products
           .filter((p) => p && p.handle)
           .map((p) => ({
             handle: String(p.handle).trim(),
@@ -180,9 +196,10 @@ async function fetchQaSpecs(repo, headRef) {
           }))
       : []
     const pages =
-      qa.pages && typeof qa.pages === 'object'
-        ? Object.fromEntries(Object.entries(qa.pages).map(([k, v]) => [k, String(v).trim()]))
+      src.pages && typeof src.pages === 'object'
+        ? Object.fromEntries(Object.entries(src.pages).map(([k, v]) => [k, String(v).trim()]))
         : {}
+    if (!products.length && !Object.keys(pages).length) continue
     return { products, pages }
   }
   return null
