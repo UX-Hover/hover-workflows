@@ -154,12 +154,6 @@ async function fetchTemplatesReferencingSections(repo, sectionHandles, headRef) 
   return results
 }
 
-function normalizeTemplate(t) {
-  if (!t || String(t).trim() === 'default') return 'product.default'
-  const s = String(t).trim()
-  return s.startsWith('product.') ? s : `product.${s}`
-}
-
 async function fetchQaSpecs(repo, headRef) {
   let content
   try {
@@ -182,7 +176,6 @@ async function fetchQaSpecs(repo, headRef) {
           .filter((p) => p && p.handle)
           .map((p) => ({
             handle: String(p.handle).trim(),
-            template: normalizeTemplate(p.template),
             has: Array.isArray(p.has) ? p.has.map((h) => String(h).trim()) : [],
           }))
       : []
@@ -199,7 +192,7 @@ function formatQaSpecs(specs) {
   if (!specs || !specs.products.length) return null
   const productLines = specs.products.map((p) => {
     const feats = p.has.length ? p.has.join(', ') : '(aucune feature spécifique déclarée)'
-    return `- \`/products/${p.handle}\` (template: ${p.template}) — features testables : ${feats}`
+    return `- \`/products/${p.handle}\` — features testables : ${feats}`
   })
   const pageLines = Object.entries(specs.pages).map(([name, path]) => `- ${name}: ${path}`)
   return [
