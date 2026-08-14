@@ -31,6 +31,7 @@ templates:
 steps:
   - action: navigate | click | check_element | assert_text | assert_visible
     viewport: desktop | mobile | both
+    view: <REQUIRED on every step — the template view suffix this step runs against, e.g. badge-a; null for the default template>
     url: <when action is navigate — real path only, use ?view= suffix for non-default templates>
     selector: <real CSS selector from the branch code — never a placeholder>
     wait_after: <optional, milliseconds to wait after the step>
@@ -44,6 +45,8 @@ regression:
   - <specific page/flow to smoke test, named explicitly, in French>
 ```
 
+**`view` is mandatory on every single step, no exceptions.** The QA runner resolves the page to load step by step from this field (it navigates itself to `/products/<handle>?view=<view>`), NOT from the top-level `templates:` list — that list is a summary only. A step testing the default template must carry `view: null` explicitly. Never leave `view` out, and never put the view information only inside the `assertion` text (e.g. "Version A (badge-a) — ...") — the runner cannot parse prose, and a step without a machine-readable `view` is untestable. When one check applies to several views, emit one step per view, each with its own `view` value.
+
 Every `steps` entry must specify which viewport(s) it applies to. Every setting from "Section/block schema settings" must appear in `settings_matrix` with its full set of values to test — not a subset. Use concrete selectors and URLs grounded in the provided code.
 
 End the entire comment with this footer on its own line, after the closing YAML fence:
@@ -53,6 +56,7 @@ End the entire comment with this footer on its own line, after the closing YAML 
 Rules:
 - Only output the YAML block and the footer — no preamble, no closing remarks.
 - Human-readable string values inside the YAML are in French; field names and action keywords stay in English.
-- Be concrete. Every step names a real template, real selector (or explicit bracketed placeholder), or real breakpoint — never a vague assertion.
+- Be concrete. Every step names a real template, real selector, or real breakpoint — never a vague assertion.
 - Each `regression` entry is a single plain-text line. NEVER put `": "` (a colon followed by a space) inside it — YAML would parse the line as a key/value mapping and the check breaks. Use a dash or a comma instead.
 - `regression` is for storefront checks a browser could do but that can't be pinned to a static selector/product. NEVER put a non-browser item there (CI workflow files like `.github/workflows/*.yml`, build config, theme settings JSON) — omit those entirely.
+- Every step carries a `view` field (`null` for the default template). A YAML where any step is missing `view` is invalid output.

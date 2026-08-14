@@ -36,6 +36,15 @@ export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
     if (!VIEWPORTS.has(step.viewport)) {
       errors.push(`${at}: viewport must be desktop, mobile or both (got "${step.viewport}")`)
     }
+    // The runner resolves the page per step from `view` — a step without it is
+    // untestable (it would run against an unknown page and false-fail).
+    if (!('view' in step)) {
+      errors.push(
+        `${at}: missing \`view\` — every step must declare the template view it runs against (\`view: null\` for the default template)`
+      )
+    } else if (step.view !== null && (typeof step.view !== 'string' || !step.view.trim())) {
+      errors.push(`${at}: \`view\` must be null or a non-empty view suffix string (got "${step.view}")`)
+    }
     if (step.action === 'navigate') {
       if (!step.url) {
         errors.push(`${at}: navigate step without url`)
