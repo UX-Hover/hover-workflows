@@ -39,16 +39,29 @@ export async function fetchDiff(repo, prNumber) {
 }
 
 export async function fetchChangedFiles(repo, prNumber) {
-  const res = await request(`${API_BASE}/repos/${repo}/pulls/${prNumber}/files`, {
-    headers: { Accept: 'application/vnd.github+json' },
-  })
-  const data = await res.json()
-  return data.map(({ filename, additions, deletions, status }) => ({
-    filename,
-    additions,
-    deletions,
-    status,
-  }))
+  // /pulls/N/files defaults to 30 items — an unpaginated read silently drops
+  // changed files on any sizeable PR, which also breaks section/template mapping.
+  const files = []
+  const PER_PAGE = 100
+  const MAX_PAGES = 30
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const res = await request(
+      `${API_BASE}/repos/${repo}/pulls/${prNumber}/files?per_page=${PER_PAGE}&page=${page}`,
+      { headers: { Accept: 'application/vnd.github+json' } }
+    )
+    const data = await res.json()
+    if (!Array.isArray(data) || data.length === 0) break
+    files.push(
+      ...data.map(({ filename, additions, deletions, status }) => ({
+        filename,
+        additions,
+        deletions,
+        status,
+      }))
+    )
+    if (data.length < PER_PAGE) break
+  }
+  return files
 }
 
 export async function fetchFileContent(repo, filePath, ref) {

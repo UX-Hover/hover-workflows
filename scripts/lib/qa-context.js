@@ -23,8 +23,14 @@ function isJs(filename) {
   return filename.endsWith('.js') || filename.endsWith('.js.liquid')
 }
 
+function isStylesheet(filename) {
+  return filename.endsWith('.css') || filename.endsWith('.scss') || filename.endsWith('.css.liquid')
+}
+
 function shouldSkip(filename) {
-  if (filename.endsWith('.css') || filename.endsWith('.scss')) return true
+  // Stylesheets are NOT skipped: they are the ground truth for real class names.
+  // Without them the model grounds selectors only in the markup, so a typo'd class
+  // in Liquid looks authoritative and gets asserted as correct.
   if (filename.endsWith('.json')) return true
   if (filename.includes('config/')) return true
   return false
@@ -236,6 +242,8 @@ function formatQaSpecs(specs) {
   ].join('\n')
 }
 
+// Files the PR itself changed are `primary` and must survive the context budget;
+// transitively-referenced snippets are `secondary` and are dropped first.
 async function gatherRelatedFiles(repo, changedFiles, headRef) {
   const related = new Map()
   const seenSnippetPaths = new Set()
@@ -250,7 +258,7 @@ async function gatherRelatedFiles(repo, changedFiles, headRef) {
       } catch {
         continue
       }
-      related.set(file.filename, content)
+      related.set(file.filename, { content, primary: true })
 
       const renderedNames = parseRenderedSnippets(content)
       for (const name of renderedNames) {
@@ -259,15 +267,15 @@ async function gatherRelatedFiles(repo, changedFiles, headRef) {
         seenSnippetPaths.add(snippetPath)
         try {
           const snippetContent = await fetchFileContent(repo, snippetPath, headRef)
-          related.set(snippetPath, snippetContent)
+          related.set(snippetPath, { content: snippetContent, primary: false })
         } catch {
           // referenced snippet not found at this path — skip
         }
       }
-    } else if (isJs(file.filename)) {
+    } else if (isJs(file.filename) || isStylesheet(file.filename)) {
       try {
         const content = await fetchFileContent(repo, file.filename, headRef)
-        related.set(file.filename, content)
+        related.set(file.filename, { content, primary: true })
       } catch {
         // skip unreadable file
       }
@@ -277,21 +285,58 @@ async function gatherRelatedFiles(repo, changedFiles, headRef) {
   return related
 }
 
-function capRelatedFiles(related) {
-  const entries = [...related.entries()].map(([filePath, content]) => ({
-    filePath,
-    content: content.length > SINGLE_FILE_LIMIT ? content.slice(0, SINGLE_FILE_LIMIT) : content,
-  }))
+// A Liquid section's {% schema %} sits at the END of the file, so a plain
+// head-truncation silently deletes every setting — settings_matrix is then
+// generated from nothing. Keep the head AND the schema block.
+function truncateFile(content) {
+  if (content.length <= SINGLE_FILE_LIMIT) return content
 
-  entries.sort((a, b) => b.content.length - a.content.length)
-
-  let total = entries.reduce((sum, e) => sum + e.content.length, 0)
-  while (total > TOTAL_RELATED_LIMIT && entries.length > 0) {
-    const largest = entries.shift()
-    total -= largest.content.length
+  const schemaMatch = content.match(SCHEMA_BLOCK_RE)
+  if (!schemaMatch) {
+    return `${content.slice(0, SINGLE_FILE_LIMIT)}\n[file truncated]`
   }
 
-  return entries
+  const schema = schemaMatch[0]
+  // Always preserve the schema; give the rest of the budget to the head.
+  const headBudget = Math.max(0, SINGLE_FILE_LIMIT - schema.length)
+  if (headBudget === 0) {
+    return `[markup omitted — schema preserved]\n${schema.slice(0, SINGLE_FILE_LIMIT)}`
+  }
+  return `${content.slice(0, headBudget)}\n[markup truncated — schema preserved below]\n${schema}`
+}
+
+function capRelatedFiles(related) {
+  const entries = [...related.entries()].map(([filePath, { content, primary }]) => ({
+    filePath,
+    primary,
+    content: truncateFile(content),
+  }))
+
+  let total = entries.reduce((sum, e) => sum + e.content.length, 0)
+  if (total <= TOTAL_RELATED_LIMIT) return entries
+
+  // Evict secondary (transitively-referenced) files first, largest first.
+  // The PR's own changed files are what the QA plan is about — never drop them
+  // to make room for a snippet they merely reference.
+  const secondary = entries.filter((e) => !e.primary).sort((a, b) => b.content.length - a.content.length)
+  const kept = new Set(entries)
+  for (const entry of secondary) {
+    if (total <= TOTAL_RELATED_LIMIT) break
+    kept.delete(entry)
+    total -= entry.content.length
+  }
+
+  // Still over budget on primary files alone: drop the largest primaries last.
+  if (total > TOTAL_RELATED_LIMIT) {
+    const primaries = [...kept].sort((a, b) => b.content.length - a.content.length)
+    for (const entry of primaries) {
+      if (total <= TOTAL_RELATED_LIMIT || kept.size <= 1) break
+      kept.delete(entry)
+      total -= entry.content.length
+    }
+  }
+
+  return entries.filter((e) => kept.has(e))
 }
 
 function buildRelatedFilesContext(entries) {

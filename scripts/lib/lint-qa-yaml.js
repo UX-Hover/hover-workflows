@@ -12,10 +12,27 @@ const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
 // reliable) — route these to `regression` instead.
 const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(?:est|sont|apparai\w+)\s+(?:pas|plus)\b|\bne\s+(?:s'affiche\w*|doit|doivent|devrait\w*|sont)\s+(?:pas|plus)\b/i
 
-export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
+// Wording that describes the diff instead of the expected user-facing result.
+// Its presence proves the assertion was copied from the changed code rather than
+// derived from intent — the artifact then passes on broken code and fails once fixed.
+const DIFF_REFERENTIAL_RE =
+  /nouvelle?\s+classe|modifi(?:é|ee|ée)s?\s+(?:dans|par)\s+(?:le\s+diff|la\s+PR|cette\s+PR)|renomm(?:é|ee|ée)s?\s+depuis|r(?:é|e)gression\s+depuis|ajout(?:é|ee|ée)s?\s+(?:dans|par)\s+(?:cette\s+)?(?:la\s+)?PR|comme\s+dans\s+le\s+diff|volontaires?\b|appliqu(?:é|ee|ée)s?\s+par\s+la\s+PR/i
+
+export function lintQaYaml(markdown, { allowedHandles = [], hasSchemaSettings = false } = {}) {
   const allowed = new Set(allowedHandles)
   const fence = markdown.match(/```ya?ml\n([\s\S]*?)```/)
   if (!fence) return { errors: ['no fenced YAML block found in the output'] }
+
+  // The contract is "only the YAML block and the footer". Prose before the fence
+  // is usually the model narrating its retry loop, and it ships to the PR comment.
+  const preamble = markdown.slice(0, markdown.indexOf(fence[0])).trim()
+  if (preamble.length > 0) {
+    return {
+      errors: [
+        `output starts with ${preamble.length} chars of prose before the YAML fence — emit ONLY the fenced YAML block and the footer (offending start: "${preamble.slice(0, 80)}…")`,
+      ],
+    }
+  }
 
   let doc
   try {
@@ -45,6 +62,22 @@ export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
     } else if (step.view !== null && (typeof step.view !== 'string' || !step.view.trim())) {
       errors.push(`${at}: \`view\` must be null or a non-empty view suffix string (got "${step.view}")`)
     }
+    // The runner resolves the page from `view`; a url carrying a different
+    // ?view= silently tests another template while lint sees both as valid.
+    if (step.url) {
+      const urlView = step.url.match(/[?&]view=([\w.-]+)/)
+      const declared = step.view === null || step.view === undefined ? null : String(step.view)
+      if (urlView && urlView[1] !== declared) {
+        errors.push(
+          `${at}: url declares ?view=${urlView[1]} but the step's \`view\` is ${declared === null ? 'null' : `"${declared}"`} — they must match (the runner navigates from \`view\`)`
+        )
+      }
+      if (!urlView && declared !== null && step.url.includes('/products/')) {
+        errors.push(
+          `${at}: \`view: "${declared}"\` but the url has no ?view=${declared} suffix — a non-default template must be loaded with its preview suffix`
+        )
+      }
+    }
     if (step.action === 'navigate') {
       if (!step.url) {
         errors.push(`${at}: navigate step without url`)
@@ -70,6 +103,18 @@ export function lintQaYaml(markdown, { allowedHandles = [] } = {}) {
       }
     }
     const freeText = `${step.assertion ?? ''} ${step.expected ?? ''}`
+    if (DIFF_REFERENTIAL_RE.test(freeText)) {
+      errors.push(
+        `${at}: assertion describes the diff instead of the expected result ("${(step.assertion || step.expected || '').slice(0, 80)}") — this proves it was copied from the changed markup, so it passes on broken code and fails once fixed. Assert the INTENDED user-facing state (from schema labels, locale strings, CSS-defined classes, PR intent), or move the doubt to regression`
+      )
+    }
+    // "ne produit pas d'erreur" / "n'affiche aucun" are absence checks the
+    // ABSENCE_RE vocabulary misses.
+    if (/\bne\s+(?:produit|génère|declenche|déclenche|renvoie)\s+(?:pas|aucune?)\b|\bn'affiche\s+aucune?\b|\bsans\s+erreur\b/i.test(freeText)) {
+      errors.push(
+        `${at}: "no error / nothing shown" is an absence check — a step only reliably confirms presence; move it to regression`
+      )
+    }
     if (CONDITIONAL_RE.test(freeText)) {
       errors.push(
         `${at}: conditional assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — split into two steps on two distinct products from the qa block`
