@@ -20,7 +20,7 @@ async function main() {
     fetchChangedFiles(REPO, PR_NUMBER),
   ])
 
-  const { userPrompt, allowedHandles } = await buildQaUserPrompt({
+  const { userPrompt, allowedHandles, sectionViews, hasSchemaSettings } = await buildQaUserPrompt({
     repo: REPO,
     prNumber: PR_NUMBER,
     headRef: HEAD_REF,
@@ -49,7 +49,8 @@ async function main() {
     return
   }
 
-  let { errors } = lintQaYaml(botInstructions, { allowedHandles })
+  const lintOpts = { allowedHandles, sectionViews, hasSchemaSettings }
+  let { errors } = lintQaYaml(botInstructions, lintOpts)
   if (errors.length) {
     console.log(`Lint failed (${errors.length} error(s)), retrying once with feedback`)
     const retryPrompt = [
@@ -62,7 +63,7 @@ async function main() {
       botInstructions,
     ].join('\n')
     botInstructions = await ask(systemPrompt, retryPrompt, 16000)
-    errors = lintQaYaml(botInstructions, { allowedHandles }).errors
+    errors = lintQaYaml(botInstructions, lintOpts).errors
   }
 
   if (errors.length) {

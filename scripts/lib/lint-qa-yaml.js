@@ -15,11 +15,28 @@ const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(
 // Wording that describes the diff instead of the expected user-facing result.
 // Its presence proves the assertion was copied from the changed code rather than
 // derived from intent — the artifact then passes on broken code and fails once fixed.
-const DIFF_REFERENTIAL_RE =
-  /nouvelle?\s+classe|modifi(?:é|ee|ée)s?\s+(?:dans|par)\s+(?:le\s+diff|la\s+PR|cette\s+PR)|renomm(?:é|ee|ée)s?\s+depuis|r(?:é|e)gression\s+depuis|ajout(?:é|ee|ée)s?\s+(?:dans|par)\s+(?:cette\s+)?(?:la\s+)?PR|comme\s+dans\s+le\s+diff|volontaires?\b|appliqu(?:é|ee|ée)s?\s+par\s+la\s+PR/i
+const DIFF_REFERENTIAL_RE = new RegExp(
+  [
+    'nouvelle?\\s+classe',
+    'dans\\s+le\\s+diff', // "hardcodé dans le diff", "modifié dans le diff", "comme dans le diff"
+    'renomm(?:é|ee|ée)s?\\s+depuis',
+    'r(?:é|e)gressions?\\s+(?:depuis|visuelles?|intentionnelles?|volontaires?)',
+    '(?:volontaire|intentionnel)(?:le)?s?\\b',
+    'hardcod(?:é|ee|ée)s?\\b',
+    '(?:modifi|ajout|appliqu|introduit)(?:é|ee|ée)s?\\s+(?:dans|par)\\s+(?:cette\\s+|la\\s+)?PR',
+    'valeurs?\\s+(?:actuelles?|du\\s+diff)',
+  ].join('|'),
+  'i'
+)
 
-export function lintQaYaml(markdown, { allowedHandles = [], hasSchemaSettings = false } = {}) {
+export function lintQaYaml(
+  markdown,
+  { allowedHandles = [], hasSchemaSettings = false, sectionViews = null } = {}
+) {
   const allowed = new Set(allowedHandles)
+  // Views whose template actually contains a changed section. Null/empty means
+  // "unknown" (e.g. a global section like the header or cart drawer) — no check.
+  const knownViews = Array.isArray(sectionViews) && sectionViews.length ? new Set(sectionViews) : null
   const fence = markdown.match(/```ya?ml\n([\s\S]*?)```/)
   if (!fence) return { errors: ['no fenced YAML block found in the output'] }
 
@@ -61,6 +78,12 @@ export function lintQaYaml(markdown, { allowedHandles = [], hasSchemaSettings = 
       )
     } else if (step.view !== null && (typeof step.view !== 'string' || !step.view.trim())) {
       errors.push(`${at}: \`view\` must be null or a non-empty view suffix string (got "${step.view}")`)
+    } else if (knownViews && step.view !== null && !knownViews.has(String(step.view))) {
+      // Testing a changed section on a template that does not contain it means
+      // the element is never rendered — every assertion fails for the wrong reason.
+      errors.push(
+        `${at}: view "${step.view}" is not among the templates that contain the changed section(s) [${[...knownViews].join(', ')}] — the changed code does not render there, so these steps fail regardless of code quality. Use one of those views, or move the check to regression`
+      )
     }
     // The runner resolves the page from `view`; a url carrying a different
     // ?view= silently tests another template while lint sees both as valid.
@@ -127,6 +150,18 @@ export function lintQaYaml(markdown, { allowedHandles = [], hasSchemaSettings = 
     }
   })
 
+  // settings_matrix is the main lever for reaching config-driven defects; an
+  // empty one while the section declares settings means the schema never made it
+  // into context (see the schema-aware truncation in qa-context.js).
+  if (hasSchemaSettings) {
+    const matrix = doc.settings_matrix
+    if (!Array.isArray(matrix) || matrix.length === 0) {
+      errors.push(
+        '`settings_matrix` is empty but the section/block schema declares settings — enumerate every provided setting with its full set of values to test'
+      )
+    }
+  }
+
   // Each regression entry must be a plain string. A ": " inside an unquoted list
   // item makes YAML parse it as a mapping, which crashes the executor's
   // regression pass (regText.match is not a function) after the steps have run.
@@ -138,6 +173,15 @@ export function lintQaYaml(markdown, { allowedHandles = [], hasSchemaSettings = 
         if (typeof r !== 'string') {
           errors.push(
             `regression[${i}]: must be a plain one-line string — a ": " made YAML parse it as a mapping; rephrase without ": " (use a dash) or quote the whole line`
+          )
+          return
+        }
+        // The same poison as in steps: a regression line that certifies the
+        // changed value ("vérifier que X vaut magenta", "régression volontaire")
+        // turns the reviewer into a rubber stamp for the bug.
+        if (DIFF_REFERENTIAL_RE.test(r)) {
+          errors.push(
+            `regression[${i}]: describes the diff as the expected result ("${r.slice(0, 90)}") — regression entries are doubts to investigate or flows to smoke-test, never a changelog certifying the new values. Rephrase as a question about the intended behaviour`
           )
         }
       })

@@ -417,5 +417,17 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     templatesContext || '(none found — section may be new/unreferenced, or check manually)',
   ].join('\n')
 
-  return { userPrompt, timestamp, allowedHandles }
+  // Views whose template actually contains a changed section — the linter uses
+  // these to reject steps bound to a template where the code never renders.
+  const sectionViews = [
+    ...new Set(templateMatches.map((m) => m.viewSuffix).filter((v) => typeof v === 'string' && v)),
+  ]
+
+  return {
+    userPrompt,
+    timestamp,
+    allowedHandles,
+    sectionViews,
+    hasSchemaSettings: Boolean(schemaSettingsContext),
+  }
 }
