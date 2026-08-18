@@ -4,7 +4,7 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function ask(systemPrompt, userPrompt, maxTokens = 2000) {
   const message = await client.messages.create({
-    model: 'claude-sonnet-5',
+    model: 'claude-opus-5',
     max_tokens: maxTokens,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
