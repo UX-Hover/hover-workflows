@@ -51,9 +51,13 @@ function snippetPathFor(filename, snippetName) {
   return `${snippetsRoot}/${snippetName}.liquid`
 }
 
-function templatesRootFor(filename) {
+function themeRootFor(filename) {
   const marker = ['/sections/', '/snippets/', '/components/'].find((m) => filename.includes(m))
-  return marker ? filename.slice(0, filename.indexOf(marker)) + '/templates' : 'templates'
+  return marker ? filename.slice(0, filename.indexOf(marker)) + '/' : ''
+}
+
+function templatesRootFor(filename) {
+  return `${themeRootFor(filename)}templates`
 }
 
 const SCHEMA_BLOCK_RE = /\{%-?\s*schema\s*-?%\}([\s\S]*?)\{%-?\s*endschema\s*-?%\}/
@@ -160,6 +164,155 @@ async function fetchTemplatesReferencingSections(repo, sectionHandles, headRef) 
   return results
 }
 
+// Global sections (header, footer, cart-drawer, announcement bar…) are bound to
+// no template: they live in a section group (`sections/*-group.json`, rendered by
+// `{% sections '<group>' %}`) or are called directly from a layout
+// (`{% section '<handle>' %}` in `layout/theme.liquid`). Template scanning finds
+// nothing for them, so the model used to get "(none found)" and had no URL to
+// test on. These resolve to "renders on every page using that layout" instead.
+const LAYOUT_SECTION_RE = /\{%-?\s*section\s+['"]([^'"]+)['"]/g
+const LAYOUT_SECTION_GROUP_RE = /\{%-?\s*sections\s+['"]([^'"]+)['"]/g
+
+function sectionGroupName(groupPath) {
+  // header-group.json and header-group.context.fr.json are the same group
+  return groupPath.split('/').pop().replace(/\.json$/, '').split('.')[0]
+}
+
+// Section groups are JSON prefixed with Shopify's auto-generated /* */ banner.
+// Read the section types from `sections` only: a `"type"` string search would
+// also hit block types (`text`, `image_with_text`, `header`…) and flag a section
+// as global because a block happens to share its name.
+function sectionTypesInGroup(content) {
+  let json
+  try {
+    json = JSON.parse(content.replace(/^\s*\/\*[\s\S]*?\*\//, ''))
+  } catch {
+    return null
+  }
+  if (!json || typeof json.sections !== 'object' || !json.sections) return null
+  return new Set(
+    Object.values(json.sections)
+      .map((s) => s && s.type)
+      .filter(Boolean)
+  )
+}
+
+async function fetchGlobalSectionUsages(repo, sectionHandles, headRef) {
+  if (!sectionHandles.length) return []
+  const root = themeRootFor(sectionHandles[0].filename)
+  const handles = sectionHandles.map((s) => s.handle)
+
+  // Which section groups contain a changed section
+  let groupPaths = []
+  try {
+    groupPaths = (await fetchDirectoryListing(repo, `${root}sections`, headRef)).filter((p) =>
+      p.endsWith('.json')
+    )
+  } catch {
+    // no sections directory at this root
+  }
+  const groupsWithHandle = new Map() // group name -> Set of handles
+  for (const groupPath of groupPaths) {
+    let content
+    try {
+      content = await fetchFileContent(repo, groupPath, headRef)
+    } catch {
+      continue
+    }
+    const types = sectionTypesInGroup(content)
+    for (const handle of handles) {
+      const used = types
+        ? types.has(handle)
+        : content.includes(`"type": "${handle}"`) || content.includes(`"type":"${handle}"`)
+      if (!used) continue
+      const group = sectionGroupName(groupPath)
+      if (!groupsWithHandle.has(group)) groupsWithHandle.set(group, new Set())
+      groupsWithHandle.get(group).add(handle)
+    }
+  }
+
+  // Which layouts call a changed section directly, and which render those groups
+  let layoutPaths = []
+  try {
+    layoutPaths = (await fetchDirectoryListing(repo, `${root}layout`, headRef)).filter((p) =>
+      p.endsWith('.liquid')
+    )
+  } catch {
+    // no layout directory at this root
+  }
+  const usages = []
+  const seen = new Set()
+  const push = (usage) => {
+    const key = `${usage.handle}|${usage.layout}|${usage.group ?? ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    usages.push(usage)
+  }
+
+  for (const layoutPath of layoutPaths) {
+    let content
+    try {
+      content = await fetchFileContent(repo, layoutPath, headRef)
+    } catch {
+      continue
+    }
+    const layout = layoutPath.split('/').pop()
+    const direct = new Set([...content.matchAll(LAYOUT_SECTION_RE)].map((m) => m[1]))
+    const rendered = new Set([...content.matchAll(LAYOUT_SECTION_GROUP_RE)].map((m) => m[1]))
+    for (const handle of handles) {
+      if (direct.has(handle)) push({ handle, layout, group: null })
+    }
+    for (const [group, groupHandles] of groupsWithHandle) {
+      if (!rendered.has(group)) continue
+      for (const handle of groupHandles) push({ handle, layout, group })
+    }
+  }
+
+  // A group nothing renders (or a repo whose layouts we could not read) still
+  // beats reporting nothing: flag it as global-but-unconfirmed.
+  for (const [group, groupHandles] of groupsWithHandle) {
+    for (const handle of groupHandles) {
+      if (usages.some((u) => u.handle === handle && u.group === group)) continue
+      push({ handle, layout: null, group })
+    }
+  }
+
+  return usages
+}
+
+function formatGlobalUsages(usages) {
+  if (!usages.length) return null
+  // One line per (section, origin): a theme ships several layouts (gempages,
+  // app-specific variants) and repeating the same section once per layout buries
+  // the only fact that matters — whether it is on the default layout or not.
+  const byOrigin = new Map()
+  for (const u of usages) {
+    const key = `${u.handle}|${u.group ?? ''}`
+    if (!byOrigin.has(key)) byOrigin.set(key, { handle: u.handle, group: u.group, layouts: [] })
+    if (u.layout) byOrigin.get(key).layouts.push(u.layout)
+  }
+
+  const lines = [...byOrigin.values()].map(({ handle, group, layouts }) => {
+    const origin = group
+      ? `part of the \`${group}\` section group`
+      : 'called directly from a layout'
+    if (!layouts.length) {
+      return `- Section \`${handle}\` is a GLOBAL section — ${origin}, but no layout was found rendering it (verify manually which pages show it).`
+    }
+    if (layouts.includes('theme.liquid')) {
+      return `- Section \`${handle}\` is a GLOBAL section — ${origin}, rendered by \`layout/theme.liquid\`, so it renders on EVERY storefront page.`
+    }
+    const list = layouts.map((l) => `\`layout/${l}\``).join(', ')
+    return `- Section \`${handle}\` is a GLOBAL section — ${origin}, but rendered only by ${list} and NOT by the default \`layout/theme.liquid\` — check manually which pages use that layout before testing it.`
+  })
+
+  return [
+    ...lines,
+    '',
+    'A global section is bound to NO template: never look for a `?view=` suffix for it, never bind it to a product template, and never move it to `regression` for lack of a template. Navigate to a key page from the `qa` block (the home page `/` by default, or any listed page) and assert the section there. Leave `templates` empty (`templates: []`) when every changed section is global.',
+  ].join('\n')
+}
+
 async function fetchQaSpecs(repo, headRef, baseRef) {
   // project-specs.md is a repo-level contract maintained on the default branch.
   // Read the head ref first (a PR may edit the specs), then fall back to base:
@@ -237,8 +390,13 @@ function formatQaSpecs(specs) {
     'Test products — the ONLY valid product handles. Every `/products/...` URL MUST use one of these exact handles (the linter rejects any other). Each product is bound to a stable Shopify template (a product is assigned to one template and it does not change; what that template contains is NOT declared here — it is read from the branch code at run time):',
     ...productLines,
     '',
-    'Rule: a changed section only renders on products whose template includes it. To test a changed section, pick a test product whose template matches one of the templates listed under "Templates that reference changed sections" below — that is the only way to know the section will actually render. NEVER test a section on a product whose template does not contain it (it renders empty and produces false failures). If no test product uses a template that contains the changed section, move that check to `regression` instead of inventing a handle.',
-    ...(pageLines.length ? ['', 'Key pages (use these exact paths):', ...pageLines] : []),
+    'Rule: a changed section only renders on products whose template includes it. To test a changed section, pick a test product whose template matches one of the templates listed under "Templates that reference changed sections" below — that is the only way to know the section will actually render. NEVER test a section on a product whose template does not contain it (it renders empty and produces false failures). If no test product uses a template that contains the changed section, move that check to `regression` instead of inventing a handle. This whole rule is about template-bound sections only — a section listed under "Global sections" below has no template and is tested on a key page instead.',
+    ...(pageLines.length
+      ? ['', 'Key pages (use these exact paths):', ...pageLines]
+      : [
+          '',
+          'Key pages: none declared in project-specs.md. The home page `/` is always a valid path on a Shopify storefront — use it (and only it) when a check needs a non-product page, e.g. a global section.',
+        ]),
   ].join('\n')
 }
 
@@ -363,7 +521,11 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
   for (const ref of parseMetafieldReferences(diff)) metafieldRefs.add(ref)
 
   const sectionHandles = collectSectionHandles(changedFiles)
-  const templateMatches = await fetchTemplatesReferencingSections(repo, sectionHandles, headRef)
+  const [templateMatches, globalUsages] = await Promise.all([
+    fetchTemplatesReferencingSections(repo, sectionHandles, headRef),
+    fetchGlobalSectionUsages(repo, sectionHandles, headRef),
+  ])
+  const globalContext = formatGlobalUsages(globalUsages)
   const templatesContext = templateMatches
     .map((m) =>
       m.viewSuffix
@@ -414,7 +576,10 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     metafieldRefs.size ? [...metafieldRefs].map((r) => `- ${r}`).join('\n') : '(none found)',
     '',
     'Templates that reference changed sections (state every one explicitly, with the ?view= trick where applicable):',
-    templatesContext || '(none found — section may be new/unreferenced, or check manually)',
+    templatesContext || '(none found — the section may be global: see the next block)',
+    '',
+    'Global sections — changed sections bound to no template (layout or section group):',
+    globalContext || '(none — every changed section is template-bound)',
   ].join('\n')
 
   // Views whose template actually contains a changed section — the linter uses
