@@ -11,6 +11,12 @@ const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
 // Absence assertions the bot can't reliably confirm in a step (only presence is
 // reliable) — route these to `regression` instead.
 const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(?:est|sont|apparai\w+)\s+(?:pas|plus)\b|\bne\s+(?:s'affiche\w*|doit|doivent|devrait\w*|sont)\s+(?:pas|plus)\b/i
+// A source filename in a regression line ("main-product.liquid"). The executor
+// pulls CSS selectors out of the line with /\.[\w-]{6,}/ (yaml-runner.js), so
+// `.liquid` is queried as an element, never found, and the whole regression is
+// reported as a failure. Other extensions are under the 6-char threshold today,
+// but a regression line names a storefront behaviour, not a source file.
+const FILE_EXT_RE = /\.(liquid|scss|css|js|json|ts|tsx|jsx|html)\b/i
 
 // Wording that describes the diff instead of the expected user-facing result.
 // Its presence proves the assertion was copied from the changed code rather than
@@ -182,6 +188,11 @@ export function lintQaYaml(
         if (DIFF_REFERENTIAL_RE.test(r)) {
           errors.push(
             `regression[${i}]: describes the diff as the expected result ("${r.slice(0, 90)}") — regression entries are doubts to investigate or flows to smoke-test, never a changelog certifying the new values. Rephrase as a question about the intended behaviour`
+          )
+        }
+        if (FILE_EXT_RE.test(r)) {
+          errors.push(
+            `regression[${i}]: names a source file ("${r.slice(0, 90)}") — the executor reads the extension as a CSS selector and reports the check as failed. Describe the storefront behaviour, or name the section, without any file path or extension`
           )
         }
       })
