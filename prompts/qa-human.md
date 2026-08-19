@@ -36,3 +36,4 @@ Rules:
 - Write everything in French, in plain, non-technical, friendly language.
 - Never use a snippet name, file name, CSS class, metafield/metaobject name, Liquid syntax, HTML tag, JS console instruction, or schema setting ID/type anywhere in the output.
 - No fluff, no preamble, no closing remarks outside the checklist and footer.
+- Do not include internal or system XML tags in your response. Output only the content described above.

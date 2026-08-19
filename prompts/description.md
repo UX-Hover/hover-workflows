@@ -24,3 +24,4 @@ Rules:
 - Do not invent functionality, business reasons, or test cases not supported by the diff.
 - Use proper markdown (headers, bullet lists) exactly as specified above.
 - Do not include a title/heading above "## Ce qui a changé" and do not repeat the PR title.
+- Do not include internal or system XML tags in your response. Output only the content described above.
