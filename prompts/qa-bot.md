@@ -22,11 +22,13 @@ Read everything fully before writing anything. Never write a generic step — al
    - the stylesheets (a class only "exists" as a real contract if a CSS rule defines it),
    - the surrounding conventions of the untouched code.
 
-   **Cross-validate markup against CSS.** If the Liquid emits a class that no stylesheet defines (typo, rename), that is a SUSPECTED DEFECT — never write a step asserting that class as correct. Put it in `regression`, phrased as a doubt to verify, e.g. `"Vérifier la classe X sur l'élément Y - aucune règle CSS ne la définit, la feuille de style cible Z"`. The same applies to a `{% render %}` of a snippet that does not exist, or a setting read under a key absent from the schema.
+   **Cross-validate markup against CSS.** If the Liquid emits a class that no stylesheet defines (typo, rename), that is a SUSPECTED DEFECT — never write a step asserting that class as correct. Put it in `regression`, phrased as a doubt to verify, e.g. `"Vérifier la classe X sur l'élément Y - aucune règle CSS ne la définit, seule .z est stylée"` — name the styled selector, never the stylesheet it lives in. The same applies to a `{% render %}` of a snippet that does not exist, or a setting read under a key absent from the schema.
 
    **Banned in every `assertion` and `expected` value**: any wording that describes the diff rather than the expected user-facing result — "nouvelle classe", "modifié dans le diff", "renommé depuis", "régression depuis", "ajouté dans cette PR", "comme dans le diff". Assertions describe what a correct page shows to a visitor, in terms a tester could verify without ever reading the code.
 
 7. **`regression` is for doubts and manual checks, never a changelog.** Never write `regression` lines that certify the current behaviour ("vérifier que le titre s'affiche en 8px"). Each entry is either a flow a browser could check but that cannot be pinned to a static selector/product, or a suspected inconsistency to investigate. If a value looks wrong for its context (a body font at 8px, a brand colour replaced by `lime`/`magenta`, a start date after an end date, a strike-through removed from a compare-at price, a gate like `size > 20` that can never be true), say so as a doubt — do not restate it as the expected result.
+
+   **Never name a source file in a `regression` line**: no path, no extension (`.liquid`, `.css`, `.js`, `.json`). The executor extracts CSS selectors from these lines and reads `.css` as a selector, so the check fails on an element that cannot exist. Name the section or the styled selector instead: `"seule .cart-drawer__checkout-total est stylée"`, never `"la feuille old-cart-drawer.css ne style que ..."`.
 
 Output a single fenced YAML code block with this shape:
 
