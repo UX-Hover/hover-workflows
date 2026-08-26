@@ -1,6 +1,6 @@
 import { parse } from 'yaml'
 
-const SUPPORTED_ACTIONS = new Set(['navigate', 'click', 'check_element', 'assert_text', 'assert_visible'])
+const SUPPORTED_ACTIONS = new Set(['navigate', 'click', 'check_element', 'assert_text', 'assert_visible', 'assert_css', 'assert_absent'])
 const VIEWPORTS = new Set(['desktop', 'mobile', 'both'])
 // [produit-opt-in], {staging}, {handle-...}
 const URL_PLACEHOLDER_RE = /\[[\w-]+\]|\{[\w-]+\}/
@@ -8,8 +8,8 @@ const URL_PLACEHOLDER_RE = /\[[\w-]+\]|\{[\w-]+\}/
 // or any bracket containing an unquoted space (real CSS attribute selectors quote their values)
 const SELECTOR_PLACEHOLDER_RE = /\[(section-id|block-id)\]|\{[\w-]+\}|\[[A-Z][^\]]*\]|\[[^\]"']*\s[^\]"']*\]/
 const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
-// Absence assertions the bot can't reliably confirm in a step (only presence is
-// reliable) — route these to `regression` instead.
+// Absence assertions written under a presence action (check_element,
+// assert_visible...) false-fail — they belong to `assert_absent`.
 const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(?:est|sont|apparai\w+)\s+(?:pas|plus)\b|\bne\s+(?:s'affiche\w*|doit|doivent|devrait\w*|sont)\s+(?:pas|plus)\b/i
 // A source filename in a regression line ("main-product.liquid"). The executor
 // pulls CSS selectors out of the line with /\.[\w-]{6,}/ (yaml-runner.js), so
@@ -131,6 +131,11 @@ export function lintQaYaml(
         )
       }
     }
+    if (step.action === 'assert_css' && (typeof step.expected !== 'object' || step.expected === null || Array.isArray(step.expected))) {
+      errors.push(
+        `${at}: assert_css requires \`expected\` to be a YAML mapping of CSS property to exact value (e.g. { color: "#2D5F3E" }), not a sentence`
+      )
+    }
     const freeText = `${step.assertion ?? ''} ${step.expected ?? ''}`
     if (DIFF_REFERENTIAL_RE.test(freeText)) {
       errors.push(
@@ -149,9 +154,9 @@ export function lintQaYaml(
         `${at}: conditional assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — split into two steps on two distinct products from the qa block`
       )
     }
-    if (ABSENCE_RE.test(freeText)) {
+    if (step.action !== 'assert_absent' && ABSENCE_RE.test(freeText)) {
       errors.push(
-        `${at}: absence assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — a step only reliably confirms presence; move any "should be absent/hidden/removed" check to regression`
+        `${at}: absence assertion "${(step.assertion || step.expected || '').slice(0, 80)}" under a presence action — use \`assert_absent\` for an unconditional removal, or move the doubt to regression`
       )
     }
   })
