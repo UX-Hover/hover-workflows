@@ -1,9 +1,15 @@
 import { parse as parseYaml } from 'yaml'
 import { fetchFileContent, fetchDirectoryListing } from './github.js'
+import { extractFacts, formatFacts, factInventory } from './extract-facts.js'
 
-const DIFF_LIMIT = 60_000
-const SINGLE_FILE_LIMIT = 8_000
-const TOTAL_RELATED_LIMIT = 30_000
+// NO truncation, NO budgets. Policy (2026-08-31): every file the PR changed
+// goes in FULL, and every transitively-needed file (rendered snippets, companion
+// JS/CSS) goes in FULL. A half-read file misleads more than it saves: the model
+// reports handlers whose bodies it never saw and invents the outcome. The only
+// exclusions are compiled bundles (see isCompiledBundle) — their source is
+// fetched separately. If a prompt outgrows the model's context window we fail
+// loudly at build time (see the size warning in buildQaUserPrompt) instead of
+// silently feeding the model an amputated theme.
 
 const RENDER_TAG_RE = /\{%-?\s*render\s+['"]([^'"]+)['"]/g
 
@@ -27,13 +33,51 @@ function isStylesheet(filename) {
   return filename.endsWith('.css') || filename.endsWith('.scss') || filename.endsWith('.css.liquid')
 }
 
-function shouldSkip(filename) {
-  // Stylesheets are NOT skipped: they are the ground truth for real class names.
-  // Without them the model grounds selectors only in the markup, so a typo'd class
-  // in Liquid looks authoritative and gets asserted as correct.
-  if (filename.endsWith('.json')) return true
-  if (filename.includes('config/')) return true
-  return false
+// Changed files are NEVER skipped — if the PR touched it, the model sees it in
+// full, locales and template JSON included (a changed template JSON is often the
+// only proof of which settings the feature ships with). The single exception is
+// compiled bundles, whose source is fetched separately.
+
+
+// Themes commit their build output (`_hover-bundle.js.liquid`, `theme.min.css`).
+// These are enormous, unreadable, and a duplicate of source we already fetch, so
+// they used to consume the whole related-files budget and evict the real source.
+// Detect by shape rather than by name: minifiers strip newlines, so the giveaway
+// is a very high average line length.
+function isCompiledBundle(filePath, content) {
+  if (/\.min\.(js|css)(\.liquid)?$/.test(filePath)) return true
+  // Hover themes concatenate every component into `_hover-bundle.js.liquid` /
+  // `_hover-bundle.css.liquid`. It is NOT minified, so the line-length test below
+  // misses it, and because it contains the whole theme it reports custom elements
+  // and events from components this PR never touched — inventing an agenda of
+  // unmounted, unrelated tags. The per-component source is fetched separately.
+  if (/(?:^|\/)_?[\w-]*bundle\.(js|css)(\.liquid)?$/.test(filePath)) return true
+  if (content.length < 20_000) return false
+  const lines = content.split('\n').length
+  return content.length / lines > 400
+}
+
+// A component's behaviour usually lives in a sibling asset that the diff may not
+// touch: `sections/foo.liquid` pairs with `assets/foo.js`, `js/snippets/_foo.js`,
+// `css/snippets/_foo.scss`. Following {% render %} alone never reaches these, so
+// the model saw the markup and none of the logic that drives it.
+function companionAssetPaths(filename) {
+  const root = themeRootFor(filename)
+  const base = filename.split('/').pop().replace(/\.liquid$/, '')
+  const bare = base.replace(/^_/, '')
+  const names = [...new Set([base, bare, `_${bare}`])]
+  const paths = []
+  for (const name of names) {
+    paths.push(
+      `${root}assets/${name}.js`,
+      `${root}assets/${name}.css`,
+      `${root}js/snippets/${name}.js`,
+      `${root}js/sections/${name}.js`,
+      `${root}css/snippets/${name}.scss`,
+      `${root}css/sections/${name}.scss`
+    )
+  }
+  return [...new Set(paths)]
 }
 
 function parseRenderedSnippets(content) {
@@ -400,114 +444,137 @@ function formatQaSpecs(specs) {
   ].join('\n')
 }
 
-// Files the PR itself changed are `primary` and must survive the context budget;
-// transitively-referenced snippets are `secondary` and are dropped first.
+// Eviction order is by tier, worst first. `behaviour` outranks `primary` markup
+// on purpose: a 111k-char section file the PR touched is worth less to a test
+// plan than the 3k-char JS that defines what its buttons actually do.
+const TIER_BEHAVIOUR = 0 // JS anywhere in the component set — never evicted
+const TIER_PRIMARY = 1 // markup/styles the PR changed
+const TIER_SECONDARY = 2 // transitively reached snippets and companion styles
+
+// Locale dictionaries are the one changed-file class we do not inline in full:
+// a theme's en.default.json alone is ~65k tokens, the PR usually touches two
+// keys, and those exact lines are already visible in the diff. Everything else
+// the PR changed ships whole.
+function isLocaleDictionary(filePath) {
+  return /(^|\/)locales\/[^/]+\.json$/.test(filePath)
+}
+
+// Same argument, wider net: template/config/section-group JSON is machine data,
+// often enormous (a Replo/GemPages landing template runs 200k+ chars), and every
+// line the PR changed is already in the diff verbatim. Schema settings from
+// Liquid files are extracted separately; nothing here carries behaviour.
+function isDataJson(filePath) {
+  return filePath.endsWith('.json')
+}
+
+async function addFile(repo, related, filePath, headRef, tier) {
+  if (related.has(filePath)) {
+    // Keep the strongest tier if a file is reached twice (changed AND rendered).
+    const existing = related.get(filePath)
+    if (tier < existing.tier) existing.tier = tier
+    return null
+  }
+  let content
+  try {
+    content = await fetchFileContent(repo, filePath, headRef)
+  } catch {
+    return null
+  }
+  if (isCompiledBundle(filePath, content)) {
+    related.set(filePath, { content: '', tier, skipped: 'compiled bundle — source is included instead' })
+    return null
+  }
+  if (isLocaleDictionary(filePath)) {
+    related.set(filePath, { content: '', tier, skipped: 'locale dictionary — the changed keys are in the diff' })
+    return null
+  }
+  if (isDataJson(filePath)) {
+    related.set(filePath, { content: '', tier, skipped: 'data JSON — the changed lines are in the diff' })
+    return null
+  }
+  related.set(filePath, { content, tier })
+  return content
+}
+
 async function gatherRelatedFiles(repo, changedFiles, headRef) {
   const related = new Map()
-  const seenSnippetPaths = new Set()
 
   for (const file of changedFiles) {
-    if (shouldSkip(file.filename)) continue
+    if (file.status === 'removed') continue
+
+    const tier = isJs(file.filename) ? TIER_BEHAVIOUR : TIER_PRIMARY
+    const content = await addFile(repo, related, file.filename, headRef, tier)
+    if (!content) continue
 
     if (isLiquidComponent(file.filename)) {
-      let content
-      try {
-        content = await fetchFileContent(repo, file.filename, headRef)
-      } catch {
-        continue
-      }
-      related.set(file.filename, { content, primary: true })
-
-      const renderedNames = parseRenderedSnippets(content)
-      for (const name of renderedNames) {
-        const snippetPath = snippetPathFor(file.filename, name)
-        if (seenSnippetPaths.has(snippetPath) || related.has(snippetPath)) continue
-        seenSnippetPaths.add(snippetPath)
-        try {
-          const snippetContent = await fetchFileContent(repo, snippetPath, headRef)
-          related.set(snippetPath, { content: snippetContent, primary: false })
-        } catch {
-          // referenced snippet not found at this path — skip
-        }
-      }
-    } else if (isJs(file.filename) || isStylesheet(file.filename)) {
-      try {
-        const content = await fetchFileContent(repo, file.filename, headRef)
-        related.set(file.filename, { content, primary: true })
-      } catch {
-        // skip unreadable file
-      }
+      // Snippet + companion fetches are mostly 404 probes — run them in
+      // parallel per changed file (addFile dedupes via the shared map).
+      await Promise.all([
+        ...parseRenderedSnippets(content).map((name) =>
+          addFile(repo, related, snippetPathFor(file.filename, name), headRef, TIER_SECONDARY)
+        ),
+        // Pull in the component's own JS/CSS even when the diff never touched it.
+        ...companionAssetPaths(file.filename).map((assetPath) =>
+          addFile(repo, related, assetPath, headRef, isJs(assetPath) ? TIER_BEHAVIOUR : TIER_SECONDARY)
+        ),
+      ])
     }
   }
 
   return related
 }
 
-// A Liquid section's {% schema %} sits at the END of the file, so a plain
-// head-truncation silently deletes every setting — settings_matrix is then
-// generated from nothing. Keep the head AND the schema block.
-function truncateFile(content) {
-  if (content.length <= SINGLE_FILE_LIMIT) return content
 
-  const schemaMatch = content.match(SCHEMA_BLOCK_RE)
-  if (!schemaMatch) {
-    return `${content.slice(0, SINGLE_FILE_LIMIT)}\n[file truncated]`
-  }
-
-  const schema = schemaMatch[0]
-  // Always preserve the schema; give the rest of the budget to the head.
-  const headBudget = Math.max(0, SINGLE_FILE_LIMIT - schema.length)
-  if (headBudget === 0) {
-    return `[markup omitted — schema preserved]\n${schema.slice(0, SINGLE_FILE_LIMIT)}`
-  }
-  return `${content.slice(0, headBudget)}\n[markup truncated — schema preserved below]\n${schema}`
+function buildRelatedFilesContext(entries, related) {
+  const files = entries.map((e) => `--- ${e.filePath} ---\n${e.content}`)
+  // Name what was deliberately left out, so an absent file reads as a decision
+  // rather than as evidence the component does not exist.
+  const skipped = [...related.entries()]
+    .filter(([, v]) => v.skipped)
+    .map(([filePath, v]) => `--- ${filePath} --- [omitted: ${v.skipped}]`)
+  return [...files, ...skipped].join('\n\n')
 }
 
-function capRelatedFiles(related) {
-  const entries = [...related.entries()].map(([filePath, { content, primary }]) => ({
-    filePath,
-    primary,
-    content: truncateFile(content),
-  }))
-
-  let total = entries.reduce((sum, e) => sum + e.content.length, 0)
-  if (total <= TOTAL_RELATED_LIMIT) return entries
-
-  // Evict secondary (transitively-referenced) files first, largest first.
-  // The PR's own changed files are what the QA plan is about — never drop them
-  // to make room for a snippet they merely reference.
-  const secondary = entries.filter((e) => !e.primary).sort((a, b) => b.content.length - a.content.length)
-  const kept = new Set(entries)
-  for (const entry of secondary) {
-    if (total <= TOTAL_RELATED_LIMIT) break
-    kept.delete(entry)
-    total -= entry.content.length
-  }
-
-  // Still over budget on primary files alone: drop the largest primaries last.
-  if (total > TOTAL_RELATED_LIMIT) {
-    const primaries = [...kept].sort((a, b) => b.content.length - a.content.length)
-    for (const entry of primaries) {
-      if (total <= TOTAL_RELATED_LIMIT || kept.size <= 1) break
-      kept.delete(entry)
-      total -= entry.content.length
+// The compiled bundle rule applies to the diff too: a `_hover-bundle.js.liquid`
+// hunk is the build output of a source hunk sitting right next to it in the same
+// diff. On rez-energy-v2#37 the bundle hunks alone were 73k chars (~18k tokens)
+// of pure duplication.
+function stripBundleHunksFromDiff(diff) {
+  const parts = diff.split(/(?=diff --git )/)
+  const kept = []
+  const strippedPaths = []
+  for (const part of parts) {
+    const m = part.match(/^diff --git a\/(\S+)/)
+    if (m && isCompiledBundle(m[1], '')) {
+      strippedPaths.push(m[1])
+      continue
     }
+    kept.push(part)
   }
-
-  return entries.filter((e) => kept.has(e))
-}
-
-function buildRelatedFilesContext(entries) {
-  return entries.map((e) => `--- ${e.filePath} ---\n${e.content}`).join('\n\n')
+  if (!strippedPaths.length) return diff
+  return (
+    kept.join('') +
+    `\n[diff hunks omitted for compiled bundles (source hunks are above): ${strippedPaths.join(', ')}]\n`
+  )
 }
 
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
+  diff = stripBundleHunksFromDiff(diff)
   const qaSpecs = await fetchQaSpecs(repo, headRef, pr?.base?.ref)
   const qaContext = formatQaSpecs(qaSpecs)
   const allowedHandles = qaSpecs ? qaSpecs.products.map((p) => p.handle) : []
   const related = await gatherRelatedFiles(repo, changedFiles, headRef)
-  const cappedEntries = capRelatedFiles(related)
-  const relatedFilesContext = buildRelatedFilesContext(cappedEntries)
+  const cappedEntries = [...related.entries()]
+    .filter(([, v]) => !v.skipped)
+    .map(([filePath, { content, tier }]) => ({ filePath, tier, content }))
+  const relatedFilesContext = buildRelatedFilesContext(cappedEntries, related)
+
+  const extracted = extractFacts(cappedEntries)
+  const factsContext = formatFacts(extracted)
+
+  console.error(
+    `QA context: ${cappedEntries.length} files, ${relatedFilesContext.length} chars of code, diff ${diff.length} chars`
+  )
 
   const schemaSettingsContext = cappedEntries
     .map((e) => parseSchemaSettings(e.filePath, e.content))
@@ -534,10 +601,6 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     )
     .join('\n')
 
-  const truncatedDiff =
-    diff.length > DIFF_LIMIT
-      ? `${diff.slice(0, DIFF_LIMIT)}\n\n[diff truncated at ${DIFF_LIMIT} chars]`
-      : diff
 
   const fileList = changedFiles
     .map((f) => `- ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`)
@@ -563,11 +626,14 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     '',
     'Diff:',
     '```diff',
-    truncatedDiff,
+    diff,
     '```',
     '',
     'Related file context:',
     relatedFilesContext || '(none)',
+    '',
+    'Static facts extracted from the code above (custom elements, events, cart calls, device branches, state toggles). This list is exhaustive and machine-generated — it is your agenda: every entry must be either covered by a test or explicitly declined with a reason:',
+    factsContext || '(no behavioural code found in the changed component set)',
     '',
     'Section/block schema settings (extracted — enumerate every one of these):',
     schemaSettingsContext || '(none found)',
@@ -582,6 +648,15 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     globalContext || '(none — every changed section is template-bound)',
   ].join('\n')
 
+  // Fail loudly, not silently: past ~190k tokens the API rejects the request,
+  // and a 413 with this line in the log beats a truncated theme any day.
+  const approxTokens = Math.round(userPrompt.length / 4)
+  if (approxTokens > 170_000) {
+    console.error(
+      `WARNING: QA prompt is ~${approxTokens} tokens — near or past the model's context window. If the API rejects it, split the PR or exclude vendored assets; do NOT reintroduce silent truncation.`
+    )
+  }
+
   // Views whose template actually contains a changed section — the linter uses
   // these to reject steps bound to a template where the code never renders.
   const sectionViews = [
@@ -594,5 +669,6 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     allowedHandles,
     sectionViews,
     hasSchemaSettings: Boolean(schemaSettingsContext),
+    facts: factInventory(extracted),
   }
 }
