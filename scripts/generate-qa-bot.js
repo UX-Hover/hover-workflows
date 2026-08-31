@@ -20,7 +20,7 @@ async function main() {
     fetchChangedFiles(REPO, PR_NUMBER),
   ])
 
-  const { userPrompt, allowedHandles, sectionViews, hasSchemaSettings } = await buildQaUserPrompt({
+  const { userPrompt, qaBlock, codeCorpus } = await buildQaUserPrompt({
     repo: REPO,
     prNumber: PR_NUMBER,
     headRef: HEAD_REF,
@@ -49,7 +49,7 @@ async function main() {
     return
   }
 
-  const lintOpts = { allowedHandles, sectionViews, hasSchemaSettings }
+  const lintOpts = { qaBlock, codeCorpus }
   let { errors } = lintQaYaml(botInstructions, lintOpts)
   if (errors.length) {
     console.log(`Lint failed (${errors.length} error(s)), retrying once with feedback`)

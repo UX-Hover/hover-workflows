@@ -1,22 +1,6 @@
 import { parse } from 'yaml'
 
-const SUPPORTED_ACTIONS = new Set(['navigate', 'click', 'check_element', 'assert_text', 'assert_visible', 'assert_css', 'assert_absent'])
-const VIEWPORTS = new Set(['desktop', 'mobile', 'both'])
-// [produit-opt-in], {staging}, {handle-...}
-const URL_PLACEHOLDER_RE = /\[[\w-]+\]|\{[\w-]+\}/
-// [section-id], {x}, descriptive pseudo-selectors like [Add to cart button],
-// or any bracket containing an unquoted space (real CSS attribute selectors quote their values)
-const SELECTOR_PLACEHOLDER_RE = /\[(section-id|block-id)\]|\{[\w-]+\}|\[[A-Z][^\]]*\]|\[[^\]"']*\s[^\]"']*\]/
-const CONDITIONAL_RE = /\bsi\b|\bsinon\b|\bselon\b/i
-// Absence assertions written under a presence action (check_element,
-// assert_visible...) false-fail — they belong to `assert_absent`.
-const ABSENCE_RE = /\babsente?s?\b|\bmasqué\w*\b|\bcaché\w*\b|\bdispara\w+|n'(?:est|sont|apparai\w+)\s+(?:pas|plus)\b|\bne\s+(?:s'affiche\w*|doit|doivent|devrait\w*|sont)\s+(?:pas|plus)\b/i
-// A source filename in a regression line ("main-product.liquid"). The executor
-// pulls CSS selectors out of the line with /\.[\w-]{6,}/ (yaml-runner.js), so
-// `.liquid` is queried as an element, never found, and the whole regression is
-// reported as a failure. Other extensions are under the 6-char threshold today,
-// but a regression line names a storefront behaviour, not a source file.
-const FILE_EXT_RE = /\.(liquid|scss|css|js|json|ts|tsx|jsx|html)\b/i
+const DEVICES = new Set(['desktop', 'mobile', 'both'])
 
 // Wording that describes the diff instead of the expected user-facing result.
 // Its presence proves the assertion was copied from the changed code rather than
@@ -24,7 +8,7 @@ const FILE_EXT_RE = /\.(liquid|scss|css|js|json|ts|tsx|jsx|html)\b/i
 const DIFF_REFERENTIAL_RE = new RegExp(
   [
     'nouvelle?\\s+classe',
-    'dans\\s+le\\s+diff', // "hardcodé dans le diff", "modifié dans le diff", "comme dans le diff"
+    'dans\\s+le\\s+diff',
     'renomm(?:é|ee|ée)s?\\s+depuis',
     'r(?:é|e)gressions?\\s+(?:depuis|visuelles?|intentionnelles?|volontaires?)',
     '(?:volontaire|intentionnel)(?:le)?s?\\b',
@@ -35,14 +19,26 @@ const DIFF_REFERENTIAL_RE = new RegExp(
   'i'
 )
 
-export function lintQaYaml(
-  markdown,
-  { allowedHandles = [], hasSchemaSettings = false, sectionViews = null } = {}
-) {
-  const allowed = new Set(allowedHandles)
-  // Views whose template actually contains a changed section. Null/empty means
-  // "unknown" (e.g. a global section like the header or cart drawer) — no check.
-  const knownViews = Array.isArray(sectionViews) && sectionViews.length ? new Set(sectionViews) : null
+// Conditional steps are what needs/needs_absent routing exists to replace.
+const CONDITIONAL_RE = /\bsi\s+le\s+produit\b|\bsinon\b|\bselon\s+(?:le|la|les)\b/i
+
+// A browser cannot judge these.
+const SUBJECTIVE_RE = /\bcorrectement\b|\blisible\b|\bbon\s+contraste\b|\bharmonieu/i
+
+// Steps are natural-language prose — the runner translates to selectors itself.
+// A selector inside a step means the generator leaked implementation details.
+const SELECTOR_IN_STEP_RE = /querySelector|data-[a-z][\w-]*=|(^|[\s(])[.#][a-zA-Z][\w-]{2,}__[\w-]+/
+
+const ABSENCE_RE =
+  /\baucune?\b.*\b(?:affich|visible|présent)|\bne\s+(?:s'affiche|doit|doivent)\s+(?:pas|plus)\b|\bdispara/i
+
+// Strip CSS decoration so a `needs` value can be checked against the raw code:
+// `.hover-faq` -> hover-faq, `[data-pack-root]` -> data-pack-root.
+function selectorCore(selector) {
+  return selector.trim().replace(/^[.#[]/, '').replace(/[\]]$/, '').replace(/=.*$/, '')
+}
+
+export function lintQaYaml(markdown, { qaBlock = null, codeCorpus = '' } = {}) {
   const fence = markdown.match(/```ya?ml\n([\s\S]*?)```/)
   if (!fence) return { errors: ['no fenced YAML block found in the output'] }
 
@@ -63,144 +59,167 @@ export function lintQaYaml(
   } catch (err) {
     return { errors: [`YAML parse error: ${err.message}`] }
   }
-  if (!doc || !Array.isArray(doc.steps) || doc.steps.length === 0) {
-    return { errors: ['YAML has no `steps` list'] }
-  }
+  if (!doc || typeof doc !== 'object') return { errors: ['empty YAML document'] }
 
   const errors = []
-  doc.steps.forEach((step, i) => {
-    const at = `steps[${i}] (${step.action ?? 'no action'})`
-    if (!SUPPORTED_ACTIONS.has(step.action)) {
-      errors.push(`${at}: unsupported action — allowed: ${[...SUPPORTED_ACTIONS].join(', ')}`)
-    }
-    if (!VIEWPORTS.has(step.viewport)) {
-      errors.push(`${at}: viewport must be desktop, mobile or both (got "${step.viewport}")`)
-    }
-    // The runner resolves the page per step from `view` — a step without it is
-    // untestable (it would run against an unknown page and false-fail).
-    if (!('view' in step)) {
-      errors.push(
-        `${at}: missing \`view\` — every step must declare the template view it runs against (\`view: null\` for the default template)`
-      )
-    } else if (step.view !== null && (typeof step.view !== 'string' || !step.view.trim())) {
-      errors.push(`${at}: \`view\` must be null or a non-empty view suffix string (got "${step.view}")`)
-    } else if (knownViews && step.view !== null && !knownViews.has(String(step.view))) {
-      // Testing a changed section on a template that does not contain it means
-      // the element is never rendered — every assertion fails for the wrong reason.
-      errors.push(
-        `${at}: view "${step.view}" is not among the templates that contain the changed section(s) [${[...knownViews].join(', ')}] — the changed code does not render there, so these steps fail regardless of code quality. Use one of those views, or move the check to regression`
-      )
-    }
-    // The runner resolves the page from `view`; a url carrying a different
-    // ?view= silently tests another template while lint sees both as valid.
-    if (step.url) {
-      const urlView = step.url.match(/[?&]view=([\w.-]+)/)
-      const declared = step.view === null || step.view === undefined ? null : String(step.view)
-      if (urlView && urlView[1] !== declared) {
-        errors.push(
-          `${at}: url declares ?view=${urlView[1]} but the step's \`view\` is ${declared === null ? 'null' : `"${declared}"`} — they must match (the runner navigates from \`view\`)`
-        )
-      }
-      if (!urlView && declared !== null && step.url.includes('/products/')) {
-        errors.push(
-          `${at}: \`view: "${declared}"\` but the url has no ?view=${declared} suffix — a non-default template must be loaded with its preview suffix`
-        )
-      }
-    }
-    if (step.action === 'navigate') {
-      if (!step.url) {
-        errors.push(`${at}: navigate step without url`)
-      } else if (URL_PLACEHOLDER_RE.test(step.url)) {
-        errors.push(
-          `${at}: placeholder in url "${step.url}" — use a real handle from the qa block of project-specs.md, or move the check to regression`
-        )
-      } else if (allowed.size) {
-        const m = step.url.match(/\/products\/([\w.-]+)/)
-        if (m && !allowed.has(m[1])) {
+
+  // --- qa block: re-emitted verbatim from the PR body, never invented ---------
+  if (!doc.qa || typeof doc.qa !== 'object') {
+    errors.push('missing top-level `qa:` block (preview_theme_id + urls)')
+  } else {
+    const urls = doc.qa.urls
+    if (!Array.isArray(urls)) {
+      errors.push('`qa.urls` must be a list (empty list allowed when the dev has not provided preview URLs yet)')
+    } else if (qaBlock) {
+      const provided = new Set((qaBlock.urls ?? []).map(String))
+      for (const u of urls) {
+        if (!provided.has(String(u))) {
           errors.push(
-            `${at}: product handle "${m[1]}" is not in the qa block of project-specs.md — allowed handles: ${[...allowed].join(', ')}`
+            `qa.urls contains "${u}" which was NOT in the developer-provided qa block — re-emit the provided URLs verbatim, never invent one`
           )
         }
       }
-    } else {
-      if (!step.selector) {
-        errors.push(`${at}: ${step.action} step without selector`)
-      } else if (SELECTOR_PLACEHOLDER_RE.test(step.selector)) {
+      for (const u of provided) {
+        if (!urls.map(String).includes(u)) {
+          errors.push(`qa.urls is missing "${u}" from the developer-provided qa block — re-emit ALL provided URLs`)
+        }
+      }
+      if (
+        qaBlock.preview_theme_id != null &&
+        String(doc.qa.preview_theme_id ?? '') !== String(qaBlock.preview_theme_id)
+      ) {
         errors.push(
-          `${at}: placeholder selector "${step.selector}" — resolve a real selector from the branch code, or move the check to regression`
+          `qa.preview_theme_id must be "${qaBlock.preview_theme_id}" as provided (got "${doc.qa.preview_theme_id}")`
+        )
+      }
+    } else if (Array.isArray(urls) && urls.length > 0) {
+      errors.push(
+        'no qa block was provided by the developer, yet qa.urls is non-empty — you invented URLs; emit `urls: []` and let the dev fill them'
+      )
+    }
+  }
+
+  // --- features ---------------------------------------------------------------
+  if (!Array.isArray(doc.features) || doc.features.length === 0) {
+    errors.push('YAML has no `features` list')
+    return { errors }
+  }
+
+  doc.features.forEach((f, i) => {
+    const at = `features[${i}] ("${f?.name ?? 'sans nom'}")`
+    if (!f || typeof f !== 'object') {
+      errors.push(`${at}: must be a mapping`)
+      return
+    }
+    if (!f.name || typeof f.name !== 'string') errors.push(`${at}: missing \`name\``)
+    if (![1, 2, 3].includes(f.priority)) {
+      errors.push(`${at}: \`priority\` must be 1, 2 or 3 (got ${JSON.stringify(f.priority)})`)
+    }
+    if (!DEVICES.has(f.device)) {
+      errors.push(`${at}: \`device\` must be desktop, mobile or both (got ${JSON.stringify(f.device)})`)
+    }
+    if (!Array.isArray(f.steps) || f.steps.length === 0) {
+      errors.push(`${at}: \`steps\` must be a non-empty list`)
+    }
+
+    if (f.needs != null && f.needs_absent != null) {
+      errors.push(`${at}: carries BOTH \`needs\` and \`needs_absent\` — a feature routes on exactly one`)
+    }
+    for (const key of ['needs', 'needs_absent']) {
+      const sel = f[key]
+      if (sel == null) continue
+      if (typeof sel !== 'string' || !sel.trim()) {
+        errors.push(`${at}: \`${key}\` must be a non-empty selector string`)
+        continue
+      }
+      if (/#shopify-section-/.test(sel)) {
+        errors.push(`${at}: \`${key}\` uses a #shopify-section- instance id — generated per store, unknowable statically; use the component's own mount selector`)
+      }
+      // The selector must exist verbatim in the branch code we provided —
+      // otherwise the runner's querySelector can never match and every routed
+      // feature silently becomes "non applicable".
+      if (codeCorpus && !codeCorpus.includes(selectorCore(sel))) {
+        errors.push(
+          `${at}: \`${key}: "${sel}"\` does not appear in the provided branch code — use a selector read verbatim from the code (custom element tag, wrapper class, or data- attribute)`
         )
       }
     }
-    if (step.action === 'assert_css' && (typeof step.expected !== 'object' || step.expected === null || Array.isArray(step.expected))) {
+
+    const steps = Array.isArray(f.steps) ? f.steps : []
+    let hasAbsenceStep = false
+    steps.forEach((step, j) => {
+      const sAt = `${at} steps[${j}]`
+      if (typeof step !== 'string' || !step.trim()) {
+        errors.push(`${sAt}: each step is a plain French sentence (got ${JSON.stringify(step)})`)
+        return
+      }
+      if (SELECTOR_IN_STEP_RE.test(step)) {
+        errors.push(
+          `${sAt}: contains a CSS selector or data- attribute ("${step.slice(0, 70)}") — steps are natural language; the runner resolves selectors itself. Selectors belong ONLY in needs/needs_absent`
+        )
+      }
+      if (DIFF_REFERENTIAL_RE.test(step)) {
+        errors.push(
+          `${sAt}: describes the diff instead of the expected user-facing result ("${step.slice(0, 70)}") — assert the INTENDED state from schema labels, locales, PR intent`
+        )
+      }
+      if (CONDITIONAL_RE.test(step)) {
+        errors.push(
+          `${sAt}: conditional step ("${step.slice(0, 70)}") — split into two features routed via needs/needs_absent instead`
+        )
+      }
+      if (SUBJECTIVE_RE.test(step)) {
+        errors.push(
+          `${sAt}: subjective wording ("${step.slice(0, 70)}") — a browser cannot judge this; route to regression`
+        )
+      }
+      if (ABSENCE_RE.test(step)) hasAbsenceStep = true
+    })
+
+    // An absence-proving feature must be routed to a page where the absence is
+    // the CORRECT state — that is what needs_absent is for. Without routing, the
+    // runner may prove the absence on a page where the element is simply broken.
+    if (hasAbsenceStep && f.needs == null && f.needs_absent == null) {
       errors.push(
-        `${at}: assert_css requires \`expected\` to be a YAML mapping of CSS property to exact value (e.g. { color: "#2D5F3E" }), not a sentence`
-      )
-    }
-    const freeText = `${step.assertion ?? ''} ${step.expected ?? ''}`
-    if (DIFF_REFERENTIAL_RE.test(freeText)) {
-      errors.push(
-        `${at}: assertion describes the diff instead of the expected result ("${(step.assertion || step.expected || '').slice(0, 80)}") — this proves it was copied from the changed markup, so it passes on broken code and fails once fixed. Assert the INTENDED user-facing state (from schema labels, locale strings, CSS-defined classes, PR intent), or move the doubt to regression`
-      )
-    }
-    // "ne produit pas d'erreur" / "n'affiche aucun" are absence checks the
-    // ABSENCE_RE vocabulary misses.
-    if (/\bne\s+(?:produit|génère|declenche|déclenche|renvoie)\s+(?:pas|aucune?)\b|\bn'affiche\s+aucune?\b|\bsans\s+erreur\b/i.test(freeText)) {
-      errors.push(
-        `${at}: "no error / nothing shown" is an absence check — a step only reliably confirms presence; move it to regression`
-      )
-    }
-    if (CONDITIONAL_RE.test(freeText)) {
-      errors.push(
-        `${at}: conditional assertion "${(step.assertion || step.expected || '').slice(0, 80)}" — split into two steps on two distinct products from the qa block`
-      )
-    }
-    if (step.action !== 'assert_absent' && ABSENCE_RE.test(freeText)) {
-      errors.push(
-        `${at}: absence assertion "${(step.assertion || step.expected || '').slice(0, 80)}" under a presence action — use \`assert_absent\` for an unconditional removal, or move the doubt to regression`
+        `${at}: asserts an absence but has neither \`needs\` nor \`needs_absent\` — absence checks must be routed (needs_absent for "ça ne doit pas s'afficher" pages, needs when the absence is a mid-flow consequence on an eligible page)`
       )
     }
   })
 
-  // settings_matrix is the main lever for reaching config-driven defects; an
-  // empty one while the section declares settings means the schema never made it
-  // into context (see the schema-aware truncation in qa-context.js).
-  if (hasSchemaSettings) {
-    const matrix = doc.settings_matrix
-    if (!Array.isArray(matrix) || matrix.length === 0) {
-      errors.push(
-        '`settings_matrix` is empty but the section/block schema declares settings — enumerate every provided setting with its full set of values to test'
-      )
-    }
-  }
-
-  // Each regression entry must be a plain string. A ": " inside an unquoted list
-  // item makes YAML parse it as a mapping, which crashes the executor's
-  // regression pass (regText.match is not a function) after the steps have run.
+  // --- regression -------------------------------------------------------------
   if (doc.regression != null) {
     if (!Array.isArray(doc.regression)) {
       errors.push('`regression` must be a list of plain one-line strings')
     } else {
       doc.regression.forEach((r, i) => {
         if (typeof r !== 'string') {
-          errors.push(
-            `regression[${i}]: must be a plain one-line string — a ": " made YAML parse it as a mapping; rephrase without ": " (use a dash) or quote the whole line`
-          )
+          errors.push(`regression[${i}]: must be a plain string (YAML parsed it as ${typeof r} — quote the whole line)`)
           return
         }
-        // The same poison as in steps: a regression line that certifies the
-        // changed value ("vérifier que X vaut magenta", "régression volontaire")
-        // turns the reviewer into a rubber stamp for the bug.
         if (DIFF_REFERENTIAL_RE.test(r)) {
           errors.push(
-            `regression[${i}]: describes the diff as the expected result ("${r.slice(0, 90)}") — regression entries are doubts to investigate or flows to smoke-test, never a changelog certifying the new values. Rephrase as a question about the intended behaviour`
+            `regression[${i}]: describes the diff as the expected result ("${r.slice(0, 90)}") — phrase it as a doubt about the intended behaviour`
           )
         }
-        if (FILE_EXT_RE.test(r)) {
+        if (/\.(liquid|css|js|json|scss)\b/.test(r)) {
           errors.push(
-            `regression[${i}]: names a source file ("${r.slice(0, 90)}") — the executor reads the extension as a CSS selector and reports the check as failed. Describe the storefront behaviour, or name the section, without any file path or extension`
+            `regression[${i}]: names a source file ("${r.slice(0, 90)}") — name the section or the styled selector instead, never a file`
           )
         }
       })
+    }
+    // Unquoted `#` starts a YAML comment and silently truncates the line
+    // (hover-workflows#11): require every regression list item to be quoted.
+    const regSection = fence[1].match(/^regression:\n((?:[ \t]+-[^\n]*\n?)*)/m)
+    if (regSection) {
+      for (const line of regSection[1].split('\n')) {
+        const m = line.match(/^[ \t]+-\s+(.*)$/)
+        if (m && m[1] && !/^["']/.test(m[1])) {
+          errors.push(
+            `regression line not double-quoted ("${m[1].slice(0, 60)}") — always quote regression entries; an unquoted # would truncate the line`
+          )
+        }
+      }
     }
   }
 

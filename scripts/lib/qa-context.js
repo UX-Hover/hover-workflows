@@ -357,39 +357,19 @@ function formatGlobalUsages(usages) {
   ].join('\n')
 }
 
-async function fetchQaSpecs(repo, headRef, baseRef) {
-  // project-specs.md is a repo-level contract maintained on the default branch.
-  // Read the head ref first (a PR may edit the specs), then fall back to base:
-  // most feature branches predate the specs commit and 404 on head.
-  const refs = baseRef && baseRef !== headRef ? [headRef, baseRef] : [headRef]
-  for (const ref of refs) {
-    let content
-    try {
-      content = await fetchFileContent(repo, 'project-specs.md', ref)
-    } catch {
-      continue
-    }
-    const parsed = parseQaSpecs(content)
-    if (parsed) return parsed
-  }
-  return null
-}
-
-function parseQaSpecs(content) {
-  // Candidate YAML regions, in priority order:
-  // 1. any ```yaml fenced block (the documented canonical form)
-  // 2. the unfenced tail starting at a top-level `qa:` line — the form the CROs
-  //    actually commit (flat: `qa:` then `products:`/`pages:` at column 0, block
-  //    running to EOF or until the next markdown heading/table/fence)
+// The preview contract now lives in the PR BODY, not project-specs.md: the dev
+// pastes the preview theme + URLs they already produce for the client (Notion
+// ticket). Accept a ```yaml fence or an unfenced `qa:` region.
+export function parsePrQaBlock(body) {
+  if (!body) return null
   const candidates = []
-  for (const match of content.matchAll(/```ya?ml\n([\s\S]*?)```/g)) candidates.push(match[1])
-  const bareIdx = content.search(/^qa:/m)
+  for (const m of body.matchAll(/```ya?ml\n([\s\S]*?)```/g)) candidates.push(m[1])
+  const bareIdx = body.search(/^qa:/m)
   if (bareIdx !== -1) {
-    const lines = content.slice(bareIdx).split('\n')
-    const end = lines.findIndex((l, i) => i > 0 && /^(#{1,6}\s|\||```)/.test(l))
+    const lines = body.slice(bareIdx).split('\n')
+    const end = lines.findIndex((l, i) => i > 0 && /^(#{1,6}\s|\||```|[A-Za-z].*:$)?$/.test(l) && l.trim() === '')
     candidates.push((end === -1 ? lines : lines.slice(0, end)).join('\n'))
   }
-
   for (const raw of candidates) {
     if (!/^qa:/m.test(raw)) continue
     let parsed
@@ -398,51 +378,31 @@ function parseQaSpecs(content) {
     } catch {
       continue
     }
-    // Accept both nested (`qa:` holds products/pages) and flat (`qa:` is empty,
-    // products/pages sit at the top level) layouts.
     const src = parsed && typeof parsed.qa === 'object' && parsed.qa ? parsed.qa : parsed
-    if (!src || (!Array.isArray(src.products) && typeof src.pages !== 'object')) continue
-    const products = Array.isArray(src.products)
-      ? src.products
-          .filter((p) => p && p.handle)
-          .map((p) => ({
-            handle: String(p.handle).trim(),
-            template: p.template ? String(p.template).trim() : 'default',
-          }))
-      : []
-    const pages =
-      src.pages && typeof src.pages === 'object'
-        ? Object.fromEntries(Object.entries(src.pages).map(([k, v]) => [k, String(v).trim()]))
-        : {}
-    if (!products.length && !Object.keys(pages).length) continue
-    return { products, pages }
+    if (!src || typeof src !== 'object') continue
+    const urls = Array.isArray(src.urls) ? src.urls.map((u) => String(u).trim()).filter(Boolean) : []
+    const previewThemeId = src.preview_theme_id != null ? String(src.preview_theme_id).trim() : null
+    if (!urls.length && !previewThemeId) continue
+    return { preview_theme_id: previewThemeId, urls }
   }
   return null
 }
 
-function formatQaSpecs(specs) {
-  if (!specs || !specs.products.length) return null
-  const productLines = specs.products.map((p) => {
-    const tpl =
-      !p.template || p.template === 'default'
-        ? 'template produit par défaut (`templates/product.json`)'
-        : `template \`${p.template}\` (charger via \`?view=${p.template}\`)`
-    return `- \`/products/${p.handle}\` — ${tpl}`
-  })
-  const pageLines = Object.entries(specs.pages).map(([name, path]) => `- ${name}: ${path}`)
+function formatPrQaBlock(qaBlock) {
+  if (!qaBlock) {
+    return [
+      "(no qa block found in the PR body — the developer has not provided preview URLs yet.",
+      'Emit the qa: skeleton with `urls: []` and a French comment asking for the preview URLs, and still generate the full features list.)',
+    ].join('\n')
+  }
   return [
-    'Test products — the ONLY valid product handles. Every `/products/...` URL MUST use one of these exact handles (the linter rejects any other). Each product is bound to a stable Shopify template (a product is assigned to one template and it does not change; what that template contains is NOT declared here — it is read from the branch code at run time):',
-    ...productLines,
-    '',
-    'Rule: a changed section only renders on products whose template includes it. To test a changed section, pick a test product whose template matches one of the templates listed under "Templates that reference changed sections" below — that is the only way to know the section will actually render. NEVER test a section on a product whose template does not contain it (it renders empty and produces false failures). If no test product uses a template that contains the changed section, move that check to `regression` instead of inventing a handle. This whole rule is about template-bound sections only — a section listed under "Global sections" below has no template and is tested on a key page instead.',
-    ...(pageLines.length
-      ? ['', 'Key pages (use these exact paths):', ...pageLines]
-      : [
-          '',
-          'Key pages: none declared in project-specs.md. The home page `/` is always a valid path on a Shopify storefront — use it (and only it) when a check needs a non-product page, e.g. a global section.',
-        ]),
+    'The developer provided this preview contract in the PR body — re-emit it VERBATIM in your qa: block and route features onto these URLs via needs/needs_absent:',
+    `preview_theme_id: ${qaBlock.preview_theme_id ?? 'null'}`,
+    'urls:',
+    ...qaBlock.urls.map((u) => `  - ${u}`),
   ].join('\n')
 }
+
 
 // Eviction order is by tier, worst first. `behaviour` outranks `primary` markup
 // on purpose: a 111k-char section file the PR touched is worth less to a test
@@ -560,9 +520,8 @@ function stripBundleHunksFromDiff(diff) {
 
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
   diff = stripBundleHunksFromDiff(diff)
-  const qaSpecs = await fetchQaSpecs(repo, headRef, pr?.base?.ref)
-  const qaContext = formatQaSpecs(qaSpecs)
-  const allowedHandles = qaSpecs ? qaSpecs.products.map((p) => p.handle) : []
+  const qaBlock = parsePrQaBlock(pr?.body)
+  const qaContext = formatPrQaBlock(qaBlock)
   const related = await gatherRelatedFiles(repo, changedFiles, headRef)
   const cappedEntries = [...related.entries()]
     .filter(([, v]) => !v.skipped)
@@ -617,9 +576,8 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     'PR body:',
     pr.body || '(empty)',
     '',
-    'Test products and key pages from the `qa` block of project-specs.md (the ONLY allowed source for product handles and URLs — never invent a handle, never write a placeholder):',
-    qaContext ||
-      '(missing — do not write any step that requires a specific product; describe those checks in `regression` instead)',
+    'Preview contract (qa block from the PR body — the ONLY allowed source of URLs):',
+    qaContext,
     '',
     'Changed files:',
     fileList,
@@ -663,10 +621,15 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     ...new Set(templateMatches.map((m) => m.viewSuffix).filter((v) => typeof v === 'string' && v)),
   ]
 
+  // codeCorpus lets the linter verify that every needs/needs_absent selector
+  // exists verbatim in the branch code.
+  const codeCorpus = relatedFilesContext + '\n' + diff
+
   return {
     userPrompt,
     timestamp,
-    allowedHandles,
+    qaBlock,
+    codeCorpus,
     sectionViews,
     hasSchemaSettings: Boolean(schemaSettingsContext),
     facts: factInventory(extracted),
