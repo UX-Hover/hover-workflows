@@ -518,7 +518,36 @@ function stripBundleHunksFromDiff(diff) {
   )
 }
 
+// A deletion PR ("remove Replo files") carries every deleted line in its diff:
+// pureva-theme#63 was 16 MB / 8.4M tokens and the API rejected it outright.
+// Removed files have no behaviour left to test — the fact of the removal is all
+// that matters, so keep the filenames and drop the bodies.
+function stripDeletedFileHunksFromDiff(diff, changedFiles) {
+  const removed = new Set(
+    (changedFiles ?? []).filter((f) => f.status === 'removed').map((f) => f.filename)
+  )
+  if (!removed.size) return diff
+  const kept = []
+  const strippedPaths = []
+  for (const part of diff.split(/(?=diff --git )/)) {
+    const m = part.match(/^diff --git a\/(\S+)/)
+    if (m && removed.has(m[1])) {
+      strippedPaths.push(m[1])
+      continue
+    }
+    kept.push(part)
+  }
+  if (!strippedPaths.length) return diff
+  return (
+    kept.join('') +
+    `\n[${strippedPaths.length} file(s) DELETED by this PR — bodies omitted, nothing left to test in them:\n` +
+    strippedPaths.map((p) => `  - ${p}`).join('\n') +
+    '\n]\n'
+  )
+}
+
 export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, changedFiles }) {
+  diff = stripDeletedFileHunksFromDiff(diff, changedFiles)
   diff = stripBundleHunksFromDiff(diff)
   const qaBlock = parsePrQaBlock(pr?.body)
   const qaContext = formatPrQaBlock(qaBlock)
