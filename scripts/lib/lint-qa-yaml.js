@@ -11,7 +11,11 @@ const DIFF_REFERENTIAL_RE = new RegExp(
     'dans\\s+le\\s+diff',
     'renomm(?:é|ee|ée)s?\\s+depuis',
     'r(?:é|e)gressions?\\s+(?:depuis|visuelles?|intentionnelles?|volontaires?)',
-    '(?:volontaire|intentionnel)(?:le)?s?\\b',
+    // NB: no bare 'volontaire|intentionnel' alternative. A correct regression
+    // line often QUESTIONS intent ("à confirmer comme non intentionnelles"),
+    // which is exactly what regression is for; only the certifying phrase
+    // ("régression volontaire") is poison, and the pattern above catches it.
+    'changement\\s+(?:volontaire|intentionnel)',
     'hardcod(?:é|ee|ée)s?\\b',
     '(?:modifi|ajout|appliqu|introduit)(?:é|ee|ée)s?\\s+(?:dans|par)\\s+(?:cette\\s+|la\\s+)?PR',
     'valeurs?\\s+(?:actuelles?|du\\s+diff)',
