@@ -87,6 +87,35 @@ export async function postComment(repo, prNumber, body) {
   })
 }
 
+// A rejected QA YAML is posted to the PR so a human can salvage it, but once a
+// later run succeeds that comment is actively harmful: two YAML blocks sit in the
+// thread and the stale one is the one that failed validation. Clear our own
+// previous failure comments before posting a good result.
+export async function deleteOwnComments(repo, prNumber, bodyMatcher) {
+  let deleted = 0
+  try {
+    const res = await request(
+      `${API_BASE}/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
+      { headers: { Accept: 'application/vnd.github+json' } }
+    )
+    const comments = await res.json()
+    if (!Array.isArray(comments)) return 0
+    for (const comment of comments) {
+      if (typeof comment.body !== 'string' || !bodyMatcher.test(comment.body)) continue
+      try {
+        await request(`${API_BASE}/repos/${repo}/issues/comments/${comment.id}`, { method: 'DELETE' })
+        deleted++
+      } catch (err) {
+        console.error(`Could not delete stale comment ${comment.id}: ${err.message}`)
+      }
+    }
+  } catch (err) {
+    // Never let cleanup failure block posting the result the run exists to produce.
+    console.error(`Could not list comments for cleanup: ${err.message}`)
+  }
+  return deleted
+}
+
 export async function updatePRBody(repo, prNumber, body) {
   await request(`${API_BASE}/repos/${repo}/pulls/${prNumber}`, {
     method: 'PATCH',

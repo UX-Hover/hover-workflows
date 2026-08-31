@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel } from './lib/github.js'
+import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel, deleteOwnComments } from './lib/github.js'
 import { buildQaUserPrompt } from './lib/qa-context.js'
 import { lintQaYaml } from './lib/lint-qa-yaml.js'
 import { ask } from './lib/claude.js'
@@ -83,6 +83,11 @@ async function main() {
     )
     process.exit(1)
   }
+
+  // Retries are idempotent: drop the rejected YAML from an earlier failed run so
+  // the PR never shows two YAML blocks, one of which failed validation.
+  const cleared = await deleteOwnComments(REPO, PR_NUMBER, /^:warning: Instructions QA générées mais non conformes/)
+  if (cleared) console.log(`Removed ${cleared} stale QA failure comment(s) before posting the valid plan`)
 
   await postComment(REPO, PR_NUMBER, botInstructions)
   await addLabel(REPO, PR_NUMBER, 'qa-generated')
