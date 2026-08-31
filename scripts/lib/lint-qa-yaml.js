@@ -146,7 +146,7 @@ export function lintQaYaml(markdown, { qaBlock = null, codeCorpus = '' } = {}) {
     }
 
     const steps = Array.isArray(f.steps) ? f.steps : []
-    let hasAbsenceStep = false
+    let absenceSteps = 0
     steps.forEach((step, j) => {
       const sAt = `${at} steps[${j}]`
       if (typeof step !== 'string' || !step.trim()) {
@@ -173,15 +173,21 @@ export function lintQaYaml(markdown, { qaBlock = null, codeCorpus = '' } = {}) {
           `${sAt}: subjective wording ("${step.slice(0, 70)}") — a browser cannot judge this; route to regression`
         )
       }
-      if (ABSENCE_RE.test(step)) hasAbsenceStep = true
+      if (ABSENCE_RE.test(step)) absenceSteps++
     })
 
-    // An absence-proving feature must be routed to a page where the absence is
-    // the CORRECT state — that is what needs_absent is for. Without routing, the
-    // runner may prove the absence on a page where the element is simply broken.
-    if (hasAbsenceStep && f.needs == null && f.needs_absent == null) {
+    // A feature whose PRIMARY claim is an absence must be routed to a page
+    // where that absence is the CORRECT state — that is what needs_absent is
+    // for. Without routing, the runner may prove the absence on a page where
+    // the element is simply broken. A single absence phrased as a mid-flow
+    // consequence ("aucune redirection après l'ajout") on a global feature is
+    // fine — only flag features that are ABOUT absence: the name says so, or
+    // absence wording dominates the steps.
+    const nameSignalsAbsence = typeof f.name === 'string' && /\bsans\b|\baucune?\b|\babsen|masqué|\bplus\s+de\b|ne\s+s'affiche/i.test(f.name)
+    const absenceDominates = steps.length > 0 && absenceSteps / steps.length > 0.5
+    if ((nameSignalsAbsence || absenceDominates) && f.needs == null && f.needs_absent == null) {
       errors.push(
-        `${at}: asserts an absence but has neither \`needs\` nor \`needs_absent\` — absence checks must be routed (needs_absent for "ça ne doit pas s'afficher" pages, needs when the absence is a mid-flow consequence on an eligible page)`
+        `${at}: is an absence check but has neither \`needs\` nor \`needs_absent\` — route it (needs_absent for "ça ne doit pas s'afficher" on a counter-example page; needs when the absence is a consequence on an eligible page)`
       )
     }
   })
