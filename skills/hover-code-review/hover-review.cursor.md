@@ -157,35 +157,36 @@ Présentation **humaine et technique** à la fois : on explique ce que le code e
 
 **Verdict : ✅ Ready to merge | 🔄 Request changes | 🚫 Block**
 
-### 🔴 Critical
+## 🔴 Critical
 
-#### <titre court du problème>
+### 1. <titre court du problème>
 - **Description :** <description de l'issue>, <causes probables, en bref>
 - **File / Line :** `chemin/fichier.ext:123`
 - **How it works :** <ce que ce code essaie de faire — bref>
 - **Why it's broken / needs improvement :** <le scénario de casse concret, avec la/les ligne(s) exacte(s) citées — le dev doit pouvoir falsifier en 10 secondes>
 - **Suggestion :** <fix concret ; bloc de code court si utile>
 
-### 🟠 Important
+## 🟠 Important
 <même format>
 
-### 🟡 Minor
+## 🟡 Minor
 <même format — une version condensée sur 2–3 lignes est acceptable ici>
 
-### ❓ Questions au dev
+## ❓ Questions au dev
 Les questions sur tout ce qui est bizarre mais peut-être voulu — c'est ici qu'on demande, pas qu'on affirme :
 - Pourquoi ce template est-il supprimé/modifié ?
 - Pourquoi ce fichier de marché/config est-il mis à jour ?
 - Ce changement de `settings_data.json` doit-il être déployé, et par qui ?
 - <toute autre bizarrerie que le PR owner doit expliquer>
 
-### ♿ Accessibilité — recommandations
+## ♿ Accessibilité — recommandations
 <UNIQUEMENT les recommandations non bloquantes (améliorations possibles). Une régression d'accessibilité ou un élément neuf inaccessible est un BUG → il va dans Critical/Important/Minor, pas ici. Rien à recommander → omets la section.>
 
 **Compte : 🔴 N · 🟠 N · 🟡 N · ❓ N**
 ```
 
 - Verdict : `Block` si ≥1 🔴 ; `Request changes` si ≥1 🟠 ; sinon `Ready to merge` (les 🟡, ❓ et recommandations n'empêchent pas un ready).
+- **Chaque finding porte un titre `### N. <titre>`** — numérotation CONTINUE sur toute la review (1, 2, 3… à travers Critical → Important → Minor), pour pouvoir référencer « le point 4 » en discussion. Les sections de sévérité sont des `##`.
 - Section vide → omets-la entièrement.
 - PR propre → « ✅ **Ready to merge** — RAS. » + les éventuelles questions.
 

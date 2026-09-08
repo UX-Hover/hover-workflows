@@ -52,32 +52,33 @@ Une review qui invente un bug est pire qu'une review vide. Pour CHAQUE 🔴/🟠
 
 **Verdict : ✅ Ready to merge | 🔄 Request changes | 🚫 Block**
 
-### 🔴 Critical
+## 🔴 Critical
 
-#### <titre court du problème>
+### 1. <titre court du problème>
 - **Description :** <description de l'issue>, <causes probables, en bref>
 - **File / Line :** `chemin/fichier.ext:123`
 - **How it works :** <ce que ce code essaie de faire — bref>
 - **Why it's broken / needs improvement :** <scénario concret, ligne(s) exacte(s) citées — falsifiable en 10 s>
 - **Suggestion :** <fix concret ; bloc de code court si utile>
 
-### 🟠 Important
+## 🟠 Important
 <même format>
 
-### 🟡 Minor
+## 🟡 Minor
 <même format, condensé 2–3 lignes acceptable>
 
-### ❓ Questions au dev
+## ❓ Questions au dev
 - Pourquoi ce template est-il supprimé/modifié ? Ce settings_data doit-il être déployé, par qui ?
 - <toute bizarrerie que le PR owner doit expliquer>
 
-### ♿ Accessibilité — recommandations
+## ♿ Accessibilité — recommandations
 <non bloquantes uniquement ; une régression a11y est un BUG en Critical/Important/Minor. Rien → omets.>
 
 **Compte : 🔴 N · 🟠 N · 🟡 N · ❓ N**
 ```
 
 - Verdict : `Block` si ≥1 🔴 ; `Request changes` si ≥1 🟠 ; sinon `Ready to merge`.
+- **Chaque finding porte un titre `### N. <titre>`** — numérotation CONTINUE sur toute la review (1, 2, 3… à travers Critical → Important → Minor), pour pouvoir référencer « le point 4 » en discussion. Les sections de sévérité sont des `##`.
 - Section vide → omise. PR propre → « ✅ **Ready to merge** — RAS. » + questions éventuelles.
 - < 15 findings ; regroupe les occurrences multiples d'un même problème ; chaque finding change une décision ou apprend quelque chose, sinon supprime-le.
 - Termine par cette ligne après le bloc : `> Review générée par Hover Code Review Bot · PR #{PR_NUMBER} · {timestamp}`
