@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel } from './lib/github.js'
+import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel, deleteOwnComments } from './lib/github.js'
 import { buildQaUserPrompt } from './lib/qa-context.js'
 import { ask } from './lib/claude.js'
 
@@ -50,6 +50,11 @@ async function main() {
 
   // Substitute the footer placeholders the prompt asks the model to emit.
   review = review.replaceAll('{PR_NUMBER}', PR_NUMBER).replaceAll('{timestamp}', timestamp)
+
+  // A re-labelled PR gets a fresh review — replace the previous one instead of
+  // stacking review comments (the old one may describe hunks that no longer exist).
+  const cleared = await deleteOwnComments(REPO, PR_NUMBER, /^## 🔎 Code Review —/)
+  if (cleared) console.log(`Removed ${cleared} previous review comment(s)`)
 
   await postComment(REPO, PR_NUMBER, review)
   await addLabel(REPO, PR_NUMBER, 'code-reviewed')
