@@ -37,7 +37,22 @@ Détecte si le repo est un projet Hover CLI (présence de `components/`, `vite.c
 - Un fichier compilé modifié AVEC sa source → normal (output du build), ne pas le re-reviewer : review la **source**.
 - Repo non-CLI (thème classique) → ignore cette étape.
 
-## Étape 2 — Les vérifications
+## Étape 2 — Checklist obligatoire
+
+**Chacun de ces 10 points DOIT être vérifié sur chaque PR** — à la fin de la review tu dois pouvoir répondre à chacun, soit par un finding, soit par « RAS » (mentalement, pas dans l'output). Les catégories détaillées A–K ci-dessous disent COMMENT vérifier.
+
+1. **Fichiers hors-sujet** — y a-t-il des fichiers dans le diff qui ne semblent pas liés à la PR ? (reformatage seul, sections étrangères, rebuilds embarqués, fichiers de marché/config)
+2. **Templates hors-sujet** — des `templates/*.json` modifiés sans lien avec la feature ?
+3. **SEO** — la PR casse-t-elle quelque chose côté SEO ? (cf. F)
+4. **Variables/consts inutilisées** — le diff introduit-il (ou laisse-t-il derrière lui) des variables, consts, settings, params jamais consommés ?
+5. **Code redondant** — du code dupliqué ? Si oui, **est-ce que ça vaut vraiment une fonction** — 3+ occurrences ou une logique qui va diverger silencieusement — ou est-ce de l'over-engineering de le factoriser ?
+6. **Single Responsibility** — chaque fichier ajouté/modifié garde-t-il UNE responsabilité claire ? (un snippet qui rend ET calcule ET poste au cart ; un JS de composant qui pilote aussi un autre composant ; du CSS d'une autre surface dans le fichier)
+7. **Images** — tous les attributs corrects ? (cf. G-images)
+8. **Régression d'accessibilité** — quelque chose qui était accessible avant l'est-il moins après ? (élément natif → div, focus perdu, état non exposé, contraste dégradé)
+9. **Nouveaux éléments accessibles** — tout ce que la PR introduit est-il utilisable au clavier/lecteur d'écran ?
+10. **Web Components** — standards respectés ? (cf. K)
+
+**Mesure permanente : le changement est-il vraiment nécessaire, ou on optimise pour optimiser ?** Ça vaut dans les deux sens — un refactor de la PR qui n'apporte rien est à questionner, et une suggestion de ta part qui n'apporte rien ne doit pas exister.
 
 Pour chaque catégorie : cherche des problèmes **réels avec un scénario de casse concret**. Pas de nitpick. Si le codebase environnant dévie déjà uniformément d'une règle, ne flag pas la déviation (au pire une remarque 🟡 unique).
 
@@ -83,6 +98,14 @@ Pour chaque catégorie : cherche des problèmes **réels avec un scénario de ca
 - `alt` supprimé/vidé, texte indexable déplacé derrière du JS, liens internes supprimés, changement de handle/URL, modification meta/canonical/structured data (JSON-LD).
 - Ces changements sont parfois voulus : **flag 🟠 + demande si c'est intentionnel**, ne bloque pas seul.
 
+### G-images. Attributs d'images (checklist n°7)
+Pour CHAQUE image touchée par le diff :
+- `alt` présent et signifiant (ou `alt=""` volontaire pour une image décorative) ;
+- `width`/`height` (ou aspect-ratio CSS) pour éviter le CLS ;
+- `loading="lazy"` below-the-fold / contenu caché, `loading="eager"` (+ `fetchpriority="high"` si LCP) au-dessus ;
+- `image_url` avec un `width:` proportionné à la taille affichée (pas la résolution native pour une vignette) + `srcset`/`sizes` cohérents avec le rendu réel ;
+- pas de `background-image` pour du contenu signifiant.
+
 ### G. Performance (impact réel uniquement — pas de micro-optimisation)
 - Images : `image_url` avec `width` adapté + `srcset`/`sizes` ; `loading="lazy"` sur tout ce qui est below-the-fold ou caché au chargement (menu fermé → lazy) ; l'image LCP en eager.
 - Scripts : `defer`/module, pas de lib ajoutée pour un besoin trivial, rien de render-blocking ajouté.
@@ -94,7 +117,15 @@ Pour chaque catégorie : cherche des problèmes **réels avec un scénario de ca
 - Pas de `!important` — mieux cibler le sélecteur. Mobile-first (`min-width`). BEM + préfixes Hover (`hover-` composants, `hv-` utilities) dans les projets CLI.
 - Unité ou transform inhabituel sans raison apparente → question, pas assertion.
 
-### I. Code mort
+### K. Web Components (checklist n°10)
+- `constructor()` léger (pas de DOM access — le DOM n'est pas garanti) ; le setup dans `connectedCallback()`, le cleanup (listeners, observers, intervals) dans `disconnectedCallback()`.
+- Requêtes DOM scopées à `this.querySelector(...)`, jamais `document.querySelector` pour ses propres enfants.
+- Le tag n'est défini qu'une fois dans le thème (grep `customElements.define` du même nom) ; garde `if (!customElements.get(...))` si le fichier peut être chargé deux fois.
+- Événements custom : nommés en `namespace:action`, `bubbles` seulement si nécessaire, payload dans `detail`.
+- Pas d'état global partagé entre instances (chaque instance autonome) ; support `shopify:section:load` pour le theme editor.
+- Une classe = un composant = un fichier (SRP, checklist n°6).
+
+### I. Code mort & inutilisé (checklist n°4)
 - Fichiers/snippets/settings devenus inutilisés par la PR, divider/markup orphelin, imports morts → demander la suppression ("what was this used for?").
 
 ## Étape 3 — Questions obligatoires au développeur
@@ -121,35 +152,46 @@ Une review qui invente un bug est pire qu'une review vide : le dev cesse de la l
 
 ## Étape 4 — Format de sortie
 
+Présentation **humaine et technique** à la fois : on explique ce que le code essaie de faire avant de dire pourquoi il échoue. Ordre imposé : Critical → Important → Minor → Questions → Accessibilité.
+
 ```markdown
 ## 🔎 Code Review — <repo>#<num>
 
 **Ce que fait la PR :** <1–2 lignes reformulant l'intention, d'après le body/ticket>
 
-**Verdict : ✅ Approve | 🔄 Request changes | 🚫 Block**
+**Verdict : ✅ Ready to merge | 🔄 Request changes | 🚫 Block**
 
-### 🔴 Critique — bloque le merge
-**`chemin/fichier.liquid:123`** — <ce que ce code est censé faire>
-`<la/les ligne(s) exacte(s) citées du fichier — le dev doit pouvoir falsifier en 10 secondes>`
-Problème : <pourquoi ça casse ou peut casser — scénario concret, avec des valeurs si possible>
-Fix : <suggestion concrète ; bloc de code court si utile>
+### 🔴 Critical
 
-### 🟠 Important — à corriger avant merge
+#### <titre court du problème>
+- **Description :** <description de l'issue>, <causes probables, en bref>
+- **File / Line :** `chemin/fichier.ext:123`
+- **How it works :** <ce que ce code essaie de faire — bref>
+- **Why it's broken / needs improvement :** <le scénario de casse concret, avec la/les ligne(s) exacte(s) citées — le dev doit pouvoir falsifier en 10 secondes>
+- **Suggestion :** <fix concret ; bloc de code court si utile>
+
+### 🟠 Important
 <même format>
 
-### 🟡 Mineur
-<même format, une ligne par finding suffit>
+### 🟡 Minor
+<même format — une version condensée sur 2–3 lignes est acceptable ici>
 
 ### ❓ Questions au dev
-- <question 1>
-- <question 2>
+Les questions sur tout ce qui est bizarre mais peut-être voulu — c'est ici qu'on demande, pas qu'on affirme :
+- Pourquoi ce template est-il supprimé/modifié ?
+- Pourquoi ce fichier de marché/config est-il mis à jour ?
+- Ce changement de `settings_data.json` doit-il être déployé, et par qui ?
+- <toute autre bizarrerie que le PR owner doit expliquer>
+
+### ♿ Accessibilité — recommandations
+<UNIQUEMENT les recommandations non bloquantes (améliorations possibles). Une régression d'accessibilité ou un élément neuf inaccessible est un BUG → il va dans Critical/Important/Minor, pas ici. Rien à recommander → omets la section.>
 
 **Compte : 🔴 N · 🟠 N · 🟡 N · ❓ N**
 ```
 
-- Verdict : `Block` si ≥1 🔴 ; `Request changes` si ≥1 🟠 ; sinon `Approve` (les 🟡 et ❓ n'empêchent pas un approve).
+- Verdict : `Block` si ≥1 🔴 ; `Request changes` si ≥1 🟠 ; sinon `Ready to merge` (les 🟡, ❓ et recommandations n'empêchent pas un ready).
 - Section vide → omets-la entièrement.
-- PR propre → « ✅ **Approve** — RAS. » + les éventuelles questions.
+- PR propre → « ✅ **Ready to merge** — RAS. » + les éventuelles questions.
 
 ## Règles de signal (aussi importantes que les checks)
 
