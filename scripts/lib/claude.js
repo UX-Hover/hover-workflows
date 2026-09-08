@@ -55,3 +55,73 @@ function stripInternalTags(text) {
   }
   return cleaned
 }
+
+// Agentic variant: same model, but the model can call local tools (repo
+// exploration) in a manual request/execute loop before writing its final
+// answer. Thinking stays ADAPTIVE here (the Opus 5 default): with thinking
+// disabled a tool call can be written into visible text instead of a
+// tool_use block — fatal in a loop. Thinking blocks are replayed by
+// appending the full response.content each turn, as the API requires.
+export async function askWithTools(systemPrompt, userPrompt, { tools, execute }, { maxTokens = 16000, maxIterations = 60 } = {}) {
+  const messages = [{ role: 'user', content: userPrompt }]
+
+  for (let i = 0; i < maxIterations; i++) {
+    const message = await client.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      tools,
+      messages,
+    })
+
+    if (message.stop_reason === 'refusal') {
+      const category = message.stop_details?.category ?? 'unknown'
+      throw new Error(`Claude declined the request (stop_reason: refusal, category: ${category})`)
+    }
+
+    if (message.stop_reason === 'pause_turn') {
+      messages.push({ role: 'assistant', content: message.content })
+      continue
+    }
+
+    const toolUses = message.content.filter((b) => b.type === 'tool_use')
+    if (message.stop_reason !== 'tool_use' || toolUses.length === 0) {
+      const text = message.content
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+        .trim()
+      if (message.stop_reason === 'max_tokens') {
+        console.error(`askWithTools: response truncated at max_tokens=${maxTokens}`)
+      }
+      return stripInternalTags(text)
+    }
+
+    // Replay the WHOLE assistant content (thinking blocks included), then
+    // answer every tool_use in a single user message.
+    messages.push({ role: 'assistant', content: message.content })
+    const results = []
+    for (const tu of toolUses) {
+      let content
+      let isError = false
+      try {
+        content = String(execute(tu.name, tu.input) ?? '')
+      } catch (err) {
+        content = `Erreur: ${err.message}`
+        isError = true
+      }
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content, is_error: isError })
+    }
+    messages.push({ role: 'user', content: results })
+
+    // Nearing the cap: tell the model to wrap up with what it has.
+    if (i === maxIterations - 2) {
+      messages.push({
+        role: 'user',
+        content: 'Tu approches la limite d\'outils — termine maintenant et écris la review finale avec ce que tu as vérifié.',
+      })
+    }
+  }
+
+  throw new Error(`askWithTools: no final answer after ${maxIterations} iterations`)
+}

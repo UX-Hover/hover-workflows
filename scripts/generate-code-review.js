@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel, deleteOwnComments } from './lib/github.js'
 import { buildQaUserPrompt } from './lib/qa-context.js'
-import { ask } from './lib/claude.js'
+import { ask, askWithTools } from './lib/claude.js'
+import { buildRepoTools } from './lib/repo-tools.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -36,7 +37,15 @@ async function main() {
 
   let review
   try {
-    review = await ask(systemPrompt, userPrompt, 16000)
+    if (process.env.REPO_DIR) {
+      // Agentic mode: the model can read/grep the full checked-out branch to
+      // verify bindings and consumers before asserting anything.
+      const repoTools = buildRepoTools(process.env.REPO_DIR)
+      review = await askWithTools(systemPrompt, userPrompt, repoTools, { maxTokens: 16000 })
+    } else {
+      console.error('REPO_DIR not set — running without repo tools (context-only review)')
+      review = await ask(systemPrompt, userPrompt, 16000)
+    }
     if (!review || !review.trim()) throw new Error('empty response')
   } catch (err) {
     console.error('Code review generation failed:', err)
