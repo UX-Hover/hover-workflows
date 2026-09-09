@@ -276,19 +276,56 @@ export function buildReviewFacts(repoDir, baseRef = 'origin/main') {
     .filter(Boolean)
     .filter((p) => status.some((f) => f.path === p))
 
+  // Partial migration: a changed section whose schema gained/lost/renamed
+  // settings is used by N templates; the PR touched only some of them.
+  facts.partialMigrations = []
+  try {
+    const changedPaths = new Set(status.map((f) => f.path))
+    const changedSections = status
+      .map((f) => f.path)
+      .filter((p) => /^sections\/[^/]+\.liquid$/.test(p) && changedPaths.has(p))
+      .map((p) => p.replace(/^sections\//, '').replace(/\.liquid$/, ''))
+    const allTemplates = git(repoDir, 'ls-files', 'templates/*.json', 'templates/**/*.json').split('\n').filter(Boolean)
+    for (const type of changedSections) {
+      const users = allTemplates.filter((t) => {
+        try { return new RegExp(`"type":\\s*"${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`).test(readFileSync(path.join(repoDir, t), 'utf-8')) } catch { return false }
+      })
+      if (users.length < 2) continue
+      const touched = users.filter((t) => changedPaths.has(t))
+      if (touched.length && touched.length < users.length) {
+        facts.partialMigrations.push({ section: type, touched, untouched: users.filter((t) => !changedPaths.has(t)) })
+      }
+    }
+  } catch (err) {
+    facts.partialMigrationsError = err.message
+  }
+
   return facts
 }
 
 export function formatReviewFacts(f) {
+  return formatReviewFactsWithIds(f).text
+}
+
+// Every assessable fact gets an id F1…Fn. The model must write a disposition
+// for each one (voulu / collatéral / écarté) and the gate rejects a review
+// that skips any — the pre-pass is a floor, and this is what makes it one.
+export function formatReviewFactsWithIds(f) {
   const out = []
+  const ids = []
+  let n = 0
   const list = (title, items, fmt) => {
     if (!items || !items.length) return
     out.push(`**${title}**`)
-    for (const it of items) out.push(`- ${fmt(it)}`)
+    for (const it of items) {
+      n++
+      ids.push(`F${n}`)
+      out.push(`- **F${n}** — ${fmt(it)}`)
+    }
     out.push('')
   }
   out.push(`**Base de comparaison :** merge-base \`${f.base.slice(0, 7)}\` avec \`${f.baseRef}\` · \`${f.baseRef}\` a ${f.mainAheadBy} commit(s) d'avance sur la branche${f.mainAheadBy > 0 ? ' (branche en retard — risque de conflit)' : ''}.`)
-  if (f.themeLiquidTouched) out.push(`**⚠️ \`layout/theme.liquid\` est modifié** — impact global, à justifier par la feature.`)
+  if (f.themeLiquidTouched) { n++; ids.push(`F${n}`); out.push(`- **F${n}** — **⚠️ \`layout/theme.liquid\` est modifié** — impact global, à justifier par la feature.`) }
   out.push('')
   list('🚨 JSON INVALIDE (build ou éditeur cassé)', f.invalidJson, (j) => `\`${j.path}\` — ${j.error}`)
   const byStatus = { A: 'ajoutés', M: 'modifiés', D: 'supprimés', R: 'renommés' }
@@ -297,27 +334,52 @@ export function formatReviewFacts(f) {
   list('Changements de réglages (JSON, au niveau des clés — classer chacun : lié à la feature / édition live sans rapport)', f.jsonDiffs, (d) =>
     d.invalid ? `\`${d.path}\` — **JSON INVALIDE**` : `\`${d.path}\` (${d.total} changement(s))\n${d.changes.map((c) => `    ${c}`).join('\n')}`
   )
-  list(`Identifiants supprimés par la PR mais encore référencés ailleurs sur la branche (candidats orphelins — à évaluer : consommateur cassé, ou référence légitime ?) — ${f.deletedLineCount} lignes supprimées au total`, f.orphanCandidates.slice(0, 25), (o) =>
-    `\`${o.id}\` supprimé dans ${o.deletedIn.join(', ')} — encore dans ${o.count} fichier(s) : ${o.stillReferencedIn.join(', ')}`
+  list('Migration partielle — section modifiée, utilisée par plusieurs templates dont seuls certains sont mis à jour dans la PR (les autres reçoivent-ils encore les bons réglages ?)', f.partialMigrations, (m) =>
+    `\`sections/${m.section}.liquid\` — mis à jour : ${m.touched.map((t) => `\`${t}\``).join(', ')} · **non touchés** : ${m.untouched.map((t) => `\`${t}\``).join(', ')}`
   )
-  list('Lignes supprimées qui mentionnent une app tierce (vérifier que rien de consommé par l\'app ne disparaît)', f.appHooksDeleted, (h) => `\`${h.file}\` : \`${h.text}\``)
+  // Grouping helper: one fact per key (file, component stem…), items listed under it.
+  const groupBy = (items, keyFn) => {
+    const m = new Map()
+    for (const it of items) { const k = keyFn(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it) }
+    return [...m.entries()]
+  }
+  // Component stem: components/foo/hover-foo.js, sections/hover-foo.liquid,
+  // snippets/_hover-foo.css.liquid → "foo" — a rewrite is one fact, not six.
+  const stem = (file) => file.replace(/^.*\//, '').replace(/^_?hover-/, '').replace(/\.(css|js)\.liquid$/, '').replace(/\.[^.]+$/, '')
+  // One fact per file that deleted identifiers (not per identifier): a 300-line
+  // component rewrite yields dozens of orphans that share one disposition.
+  const orphansByFile = new Map()
+  for (const o of f.orphanCandidates.slice(0, 40)) {
+    const key = o.deletedIn.join(', ')
+    if (!orphansByFile.has(key)) orphansByFile.set(key, [])
+    orphansByFile.get(key).push(o)
+  }
+  list(`Identifiants supprimés par la PR mais encore référencés ailleurs sur la branche (candidats orphelins — à évaluer : consommateur cassé, ou référence légitime ?) — ${f.deletedLineCount} lignes supprimées au total`, [...orphansByFile.entries()], ([file, os]) =>
+    `supprimés dans ${file} :\n${os.map((o) => `    \`${o.id}\` — encore dans ${o.stillReferencedIn.join(', ')}`).join('\n')}`
+  )
+  list('Lignes supprimées qui mentionnent une app tierce (vérifier que rien de consommé par l\'app ne disparaît)', groupBy(f.appHooksDeleted, (h) => h.file), ([file, hs]) =>
+    `\`${file}\` :\n${hs.slice(0, 12).map((h) => `    \`${h.text}\``).join('\n')}${hs.length > 12 ? `\n    … +${hs.length - 12}` : ''}`
+  )
   list('Clés de traduction utilisées mais ABSENTES de la locale par défaut', f.missingDefaultLocaleKeys, (k) => `\`${k.key}\` dans \`${k.file}\``)
   list('`{% render %}` vers un snippet qui n\'existe pas sur la branche', f.missingRenderTargets, (r) => `\`${r.snippet}\` depuis \`${r.file}\``)
   list('Réglages lus dans le Liquid mais absents du schema du fichier', f.settingsNotInSchema, (s) => `\`${s.setting}\` dans \`${s.file}\``)
   list('Custom elements définis mais montés nulle part', f.customElements.definedNotMounted, (c) => `\`<${c.tag}>\` défini dans \`${c.file}\``)
   list('Balises custom montées mais jamais définies en JS', f.customElements.mountedNotDefined, (c) => `\`<${c.tag}>\` dans \`${c.file}\``)
-  list('Réécritures massives — fichiers où la PR supprime ≥40 lignes (vérifier : refonte voulue, ou résolution de merge qui écrase des changements récents de main ?)', f.mergeHygiene, (m) =>
-    `\`${m.file}\` — ${m.deletedLines} lignes supprimées · derniers commits de main sur ce fichier : ${m.mainRecentCommits.join(' · ') || '(aucun)'}`
+  list('Réécritures massives — fichiers où la PR supprime ≥40 lignes (vérifier : refonte voulue, ou résolution de merge qui écrase des changements récents de main ?)', groupBy(f.mergeHygiene, (m) => stem(m.file)), ([st, ms]) =>
+    `**${st}** :\n${ms.map((m) => `    \`${m.file}\` — ${m.deletedLines} lignes supprimées · main : ${m.mainRecentCommits.join(' · ') || '(aucun)'}`).join('\n')}`
   )
-  list('Fichiers que main a AUSSI modifiés depuis la divergence (zone de conflit)', f.mainFilesAlsoTouched.slice(0, 20), (p) => `\`${p}\``)
+  if (f.mainFilesAlsoTouched.length) list('Fichiers que main a AUSSI modifiés depuis la divergence (zone de conflit)', [f.mainFilesAlsoTouched.slice(0, 20)], (ps) => ps.map((p) => `\`${p}\``).join(', '))
   const h = f.hygiene
   list('Debug / TODO ajoutés', h.debugLeftovers, (d) => `\`${d.file}\` : \`${d.text}\``)
-  if (h.importantAdded) out.push(`**\`!important\` ajoutés :** ${h.importantAdded}\n`)
-  list('Données boutique en dur ajoutées (handles, URLs absolues, prix formatés)', h.hardcodedStoreData, (d) => `\`${d.file}\` : \`${d.text}\``)
+  if (h.importantAdded) { n++; ids.push(`F${n}`); out.push(`- **F${n}** — **\`!important\` ajoutés :** ${h.importantAdded}\n`) }
+  list('Données boutique en dur ajoutées (handles, URLs absolues, prix formatés)', groupBy(h.hardcodedStoreData, (d) => d.file), ([file, ds]) =>
+    `\`${file}\` :\n${ds.map((d) => `    \`${d.text}\``).join('\n')}`
+  )
   list('🚨 Secrets potentiels', h.secrets, (d) => `\`${d.file}\` : \`${d.text}\``)
   list('`fetch()` sans traitement visible de l\'échec (ni `.ok`, ni catch, ni throw à proximité) — vérifier ce que voit l\'utilisateur quand ça échoue', h.silentFetch, (d) => `\`${d.file}\` : \`${d.call}\``)
   list('`all_products[...]` dans une boucle (plafond Shopify ~20/page)', h.allProductsInLoop, (d) => `\`${d.file}:${d.line}\``)
-  return out.join('\n')
+  out.unshift(`Chaque fait ci-dessous porte un identifiant **Fn** — chacun doit recevoir une disposition dans la review (voulu / collatéral / écarté).`, '')
+  return { text: out.join('\n'), ids }
 }
 
 // CLI: node scripts/lib/review-facts.js <repoDir> [baseRef]

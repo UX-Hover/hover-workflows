@@ -5,7 +5,7 @@ import { fetchPR, fetchDiff, fetchChangedFiles, postComment, addLabel, deleteOwn
 import { buildQaUserPrompt } from './lib/qa-context.js'
 import { ask, askWithTools } from './lib/claude.js'
 import { buildRepoTools } from './lib/repo-tools.js'
-import { buildReviewFacts, formatReviewFacts } from './lib/review-facts.js'
+import { buildReviewFacts, formatReviewFactsWithIds } from './lib/review-facts.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -34,35 +34,53 @@ async function main() {
     changedFiles,
   })
 
-  // Agency context first (golden rule, operating facts), then the review method.
+  // Agency context first (golden rule, operating facts), then the method.
+  // Two passes, two system prompts: pass 1 reads the code freely and lists
+  // candidates with nothing else to do; pass 2 gets those candidates plus the
+  // deterministic facts and does checks → classification → verification → writing.
+  // In a single pass the facts crowded the free reading out (measured on
+  // pureva#64: 0/4 golden findings in one pass, 3/4 with the split).
   const hoverContext = await readFile(path.join(__dirname, '..', 'prompts', 'hover-context.md'), 'utf-8')
+  const explorePrompt = hoverContext + '\n\n---\n\n' + (await readFile(path.join(__dirname, '..', 'prompts', 'code-review-explore.md'), 'utf-8'))
   const systemPrompt = hoverContext + '\n\n---\n\n' + (await readFile(path.join(__dirname, '..', 'prompts', 'code-review.md'), 'utf-8'))
 
   // Deterministic pre-pass: same PR → same facts, every run. The model
   // assesses these; it does not rediscover them.
   let factsBlock = '(pré-analyse indisponible — REPO_DIR non défini)'
+  let factIds = []
   if (process.env.REPO_DIR) {
     try {
       const baseRef = `origin/${process.env.BASE_REF || pr.base?.ref || 'main'}`
-      factsBlock = formatReviewFacts(buildReviewFacts(process.env.REPO_DIR, baseRef))
+      const formatted = formatReviewFactsWithIds(buildReviewFacts(process.env.REPO_DIR, baseRef))
+      factsBlock = formatted.text
+      factIds = formatted.ids
     } catch (err) {
       console.error('review-facts failed (continuing without):', err.message)
       factsBlock = `(pré-analyse en échec : ${err.message})`
     }
   }
-  const fullUserPrompt = ['## Faits pré-calculés (déterministes)', '', factsBlock, '', '---', '', userPrompt].join('\n')
-
   let review
+  let fullUserPrompt
   try {
+    // Pass 1 — free reading. No facts, no checklist: just the PR and the tools.
+    let candidates
     if (process.env.REPO_DIR) {
-      // Agentic mode: the model can read/grep the full checked-out branch to
-      // verify bindings and consumers before asserting anything.
-      const repoTools = buildRepoTools(process.env.REPO_DIR)
-      review = await askWithTools(systemPrompt, fullUserPrompt, repoTools, { maxTokens: 16000 })
+      candidates = await askWithTools(explorePrompt, userPrompt, buildRepoTools(process.env.REPO_DIR), { maxTokens: 8000, maxIterations: 80 })
     } else {
       console.error('REPO_DIR not set — running without repo tools (context-only review)')
-      review = await ask(systemPrompt, fullUserPrompt, 16000)
+      candidates = await ask(explorePrompt, userPrompt, 8000)
     }
+    if (!candidates || !candidates.trim()) candidates = '(la passe de lecture libre n\'a rien renvoyé)'
+    console.log(`Pass 1: ${candidates.split('\n').filter((l) => l.startsWith('- ')).length} candidate(s)`)
+
+    // Pass 2 — systematic checks, classification, verification, writing.
+    fullUserPrompt = [
+      '## Candidats de la lecture libre (Étape 1, déjà faite — à trier, vérifier, compléter)', '', candidates, '', '---', '',
+      '## Faits pré-calculés (déterministes)', '', factsBlock, '', '---', '', userPrompt,
+    ].join('\n')
+    review = process.env.REPO_DIR
+      ? await askWithTools(systemPrompt, fullUserPrompt, buildRepoTools(process.env.REPO_DIR), { maxTokens: 16000 })
+      : await ask(systemPrompt, fullUserPrompt, 16000)
     if (!review || !review.trim()) throw new Error('empty response')
   } catch (err) {
     console.error('Code review generation failed:', err)
@@ -79,9 +97,13 @@ async function main() {
   // code it never linked to the feature — the golden rule, enforced.
   const gate = (text) => {
     const findings = [...text.matchAll(/^### (\d+)\. .*$\n([\s\S]*?)(?=^### |^## |\Z)/gm)]
-    return findings
+    const v = findings
       .filter(([, n, body]) => !/\*\*Type\s*:\*\*\s*(nouveau code|régression|fichier lié|périmètre)/i.test(body))
       .map(([, n]) => `finding ${n} has no valid **Type :** line (nouveau code | régression | fichier lié | périmètre)`)
+    // Every pre-computed fact must be dispositioned — the pre-pass is a floor.
+    const missing = factIds.filter((id) => !new RegExp(`\\b${id}\\b`).test(text))
+    if (missing.length) v.push(`missing disposition for fact(s): ${missing.join(', ')} — add one line each in the "Faits pré-calculés — disposition" block (voulu / collatéral → finding N / écarté + raison)`)
+    return v
   }
   let violations = gate(review)
   if (violations.length) {
