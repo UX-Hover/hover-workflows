@@ -5,7 +5,26 @@ import { fetchPR, fetchDiff, updatePRBody, removeLabel } from './lib/github.js'
 import { ask } from './lib/claude.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DIFF_LIMIT = 80_000
+
+// The generated description lives in a marked block so a re-run replaces only
+// itself. Everything the dev wrote (Ticket / Figma / Notes, the qa: preview
+// block the QA bot reads) is preserved below it. A body that is entirely the
+// legacy bot template (## Ce qui a changé …) is bot output and gets replaced.
+const START = '<!-- hover-description:start -->'
+const END = '<!-- hover-description:end -->'
+const BLOCK_RE = new RegExp(`${START}[\\s\\S]*?${END}`)
+const LEGACY_RE = /^\s*## Ce qui a changé/
+
+function devWrittenPart(body) {
+  const b = (body ?? '').replace(BLOCK_RE, '').trim()
+  return LEGACY_RE.test(b) ? '' : b
+}
+
+function mergeBody(body, description) {
+  const block = `${START}\n${description.trim()}\n${END}`
+  const dev = devWrittenPart(body)
+  return dev ? `${block}\n\n${dev}` : block
+}
 
 async function main() {
   const { REPO, PR_NUMBER } = process.env
@@ -15,28 +34,23 @@ async function main() {
 
   const [pr, diff] = await Promise.all([fetchPR(REPO, PR_NUMBER), fetchDiff(REPO, PR_NUMBER)])
 
-  const truncatedDiff =
-    diff.length > DIFF_LIMIT
-      ? `${diff.slice(0, DIFF_LIMIT)}\n\n[diff truncated at ${DIFF_LIMIT} chars]`
-      : diff
-
   const systemPrompt = await readFile(path.join(__dirname, '..', 'prompts', 'description.md'), 'utf-8')
 
   const userPrompt = [
     `PR title: ${pr.title}`,
     '',
-    'Existing PR body:',
-    pr.body || '(empty)',
+    'Ce que le dev a écrit dans la PR (ticket, Figma, notes) :',
+    devWrittenPart(pr.body) || '(vide)',
     '',
     'Diff:',
     '```diff',
-    truncatedDiff,
+    diff,
     '```',
   ].join('\n')
 
   const description = await ask(systemPrompt, userPrompt)
 
-  await updatePRBody(REPO, PR_NUMBER, description)
+  await updatePRBody(REPO, PR_NUMBER, mergeBody(pr.body, description))
   await removeLabel(REPO, PR_NUMBER, 'description')
 
   console.log(`PR description generated for ${REPO}#${PR_NUMBER}`)
