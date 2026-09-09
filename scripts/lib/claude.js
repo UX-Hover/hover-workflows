@@ -120,15 +120,25 @@ function stripInternalTags(text) {
 // tool_use block — fatal in a loop. Thinking blocks are replayed by
 // appending the full response.content each turn, as the API requires.
 export async function askWithTools(systemPrompt, userPrompt, { tools, execute }, { maxTokens = 16000, maxIterations = 60 } = {}) {
-  const messages = [{ role: 'user', content: userPrompt }]
+  // Prompt caching for the loop. The prefix (tools → system → the context dump
+  // in messages[0]) is identical on every iteration and is ~95% of each
+  // request; explicit breakpoints make it a guaranteed cache read at 0.1×.
+  // Top-level cache_control then auto-marks the last block of each request so
+  // the growing tail (tool calls + results) is read back next turn too.
+  // Verified in the logs by cache_read growing turn over turn.
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: userPrompt, cache_control: { type: 'ephemeral' } }] },
+  ]
+  const system = [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
 
   for (let i = 0; i < maxIterations; i++) {
     const message = await client.messages.create({
       model: 'claude-opus-5',
       max_tokens: maxTokens,
-      system: systemPrompt,
+      system,
       tools,
       messages,
+      cache_control: { type: 'ephemeral' },
       metadata: { user_id: REQUEST_TAG },
     })
     record(message)

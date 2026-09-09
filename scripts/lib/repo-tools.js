@@ -7,7 +7,11 @@ import path from 'node:path'
 // model claims "nothing listens to [name=previous]" it can (must) grep the
 // whole repo. All execution is local to the workflow's checkout — no network.
 
-const MAX_FILE_CHARS = 120_000
+// A read_file result rides along in EVERY later iteration of the loop, so a
+// careless full read of a 3k-line theme file taxes the whole rest of the
+// review. Unbounded reads get a 400-line window and a nudge to grep first.
+const MAX_FILE_CHARS = 40_000
+const DEFAULT_MAX_LINES = 400
 const MAX_GREP_MATCHES = 200
 const MAX_LIST_LINES = 2_000
 
@@ -73,9 +77,15 @@ export function buildRepoTools(repoDir) {
       let lines = readFileSync(abs, 'utf-8').split('\n')
       const total = lines.length
       const start = Math.max(1, input.start_line ?? 1)
-      const end = Math.min(total, input.end_line ?? total)
+      const explicitEnd = input.end_line != null
+      let end = Math.min(total, input.end_line ?? total)
+      let windowNote = ''
+      if (!explicitEnd && end - start + 1 > DEFAULT_MAX_LINES) {
+        end = start + DEFAULT_MAX_LINES - 1
+        windowNote = `\n[fenêtre par défaut de ${DEFAULT_MAX_LINES} lignes — le fichier en fait ${total} ; cible avec grep_repo puis start_line/end_line]`
+      }
       lines = lines.slice(start - 1, end)
-      let out = lines.map((l, i) => `${start + i}\t${l}`).join('\n')
+      let out = lines.map((l, i) => `${start + i}\t${l}`).join('\n') + windowNote
       if (out.length > MAX_FILE_CHARS) {
         out = out.slice(0, MAX_FILE_CHARS) + `\n[tronqué — relis avec start_line/end_line ; fichier: ${total} lignes]`
       }
