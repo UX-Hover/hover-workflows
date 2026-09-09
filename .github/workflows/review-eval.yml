@@ -1,0 +1,71 @@
+name: Code review eval
+
+# Runs the two-pass review against a golden PR N times without posting anything,
+# then scores each run against eval/golden.json. Trigger by hand from the Actions
+# tab; the summary tab shows the must-find / must-not table.
+on:
+  workflow_dispatch:
+    inputs:
+      golden:
+        description: golden id from eval/golden.json (e.g. pureva64)
+        required: true
+        default: pureva64
+      runs:
+        description: how many runs (each ≈ one full review)
+        required: true
+        default: '1'
+
+jobs:
+  eval:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Resolve golden PR
+        id: g
+        run: |
+          node -e '
+            const g = require("./eval/golden.json").prs.find(p => p.id === process.argv[1]);
+            if (!g) { console.error("unknown golden"); process.exit(1) }
+            console.log(`repo=${g.repo}`); console.log(`pr=${g.pr}`);
+          ' "${{ inputs.golden }}" >> "$GITHUB_OUTPUT"
+      - name: PR metadata
+        id: pr
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          gh pr view "${{ steps.g.outputs.pr }}" --repo "${{ steps.g.outputs.repo }}" --json headRefName,baseRefName \
+            --jq '"head=" + .headRefName, "base=" + .baseRefName' >> "$GITHUB_OUTPUT"
+      - name: Checkout golden PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.g.outputs.repo }}
+          ref: ${{ steps.pr.outputs.head }}
+          path: .calling-repo
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run reviews
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ steps.g.outputs.repo }}
+          PR_NUMBER: ${{ steps.g.outputs.pr }}
+          HEAD_REF: ${{ steps.pr.outputs.head }}
+          BASE_REF: ${{ steps.pr.outputs.base }}
+          REPO_DIR: ${{ github.workspace }}/.calling-repo
+          DRY_RUN: '1'
+        run: |
+          for i in $(seq 1 "${{ inputs.runs }}"); do
+            REVIEW_OUT="$PWD/eval-out/run-$i.md" node scripts/generate-code-review.js
+          done
+      - name: Score
+        if: always()
+        run: node scripts/eval/score.js "${{ inputs.golden }}" eval-out/run-*.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reviews-${{ inputs.golden }}
+          path: eval-out/

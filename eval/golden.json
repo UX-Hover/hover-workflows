@@ -1,0 +1,24 @@
+{
+  "_doc": "Golden set for the code-review eval. Each entry: a PR, what a good review MUST mention (regex, case-insensitive, matched against the whole review) and what it MUST NOT assert as a finding (regex matched only inside ### findings, i.e. 🔴/🟠 — the same text is allowed as a ❓ or ⚠️). Add an entry every time a review misses something a human caught, or invents something.",
+  "prs": [
+    {
+      "id": "pureva64",
+      "repo": "UX-Hover/pureva-theme",
+      "pr": 64,
+      "note": "Bundle simplification, branch 28 commits behind main. Golden findings established by hand during the v3→v4 rebuild (2026-09-09).",
+      "must_find": [
+        { "name": "render_index not incremented for 12-month card", "pattern": "render_index" },
+        { "name": "stale-merge revert of unrelated components (double-reviews-slider / image-tabs)", "pattern": "double-reviews-slider|image-tabs" },
+        { "name": "Judge.me vs Trustpilot contradiction / hardcoded handle", "pattern": "jdgm|judge\\.?me" },
+        { "name": "role=button / button→div accessibility regression", "pattern": "role=\"?button\"?|<button>.*<div>|button.*→.*div" },
+        { "name": "unmigrated templates using the section", "pattern": "index\\.pricing\\.json|evergreen|non touchés" },
+        { "name": "updateGiftCartridges overwrites gift image (locked image)", "pattern": "updateGiftCartridges" }
+      ],
+      "must_not_find": [
+        { "name": "div wrapper imbalance across Liquid branches", "pattern": "d[ée]s[ée]quilibr|balise.*(non )?ferm[ée]e|</div>.*manqu" },
+        { "name": "?variant= hidden variant as a bug", "pattern": "\\?variant=" },
+        { "name": "30 € hardcoded as a finding (store choice)", "pattern": "30\\s?€" }
+      ]
+    }
+  ]
+}

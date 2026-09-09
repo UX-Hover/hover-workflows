@@ -119,6 +119,18 @@ async function main() {
   // Substitute the footer placeholders the prompt asks the model to emit.
   review = review.replaceAll('{PR_NUMBER}', PR_NUMBER).replaceAll('{timestamp}', timestamp)
 
+  // REVIEW_OUT: also write the review to disk (eval harness). DRY_RUN: never post.
+  if (process.env.REVIEW_OUT) {
+    const { writeFile, mkdir } = await import('node:fs/promises')
+    await mkdir(path.dirname(process.env.REVIEW_OUT), { recursive: true })
+    await writeFile(process.env.REVIEW_OUT, review)
+    console.log(`Review written to ${process.env.REVIEW_OUT}`)
+  }
+  if (process.env.DRY_RUN) {
+    console.log('DRY_RUN set — not posting, not labelling')
+    return
+  }
+
   // A re-labelled PR gets a fresh review — replace the previous one instead of
   // stacking review comments (the old one may describe hunks that no longer exist).
   const cleared = await deleteOwnComments(REPO, PR_NUMBER, /^## 🔎 Code Review —/)
