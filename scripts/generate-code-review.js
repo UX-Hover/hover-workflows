@@ -118,6 +118,8 @@ async function main() {
 
   // Substitute the footer placeholders the prompt asks the model to emit.
   review = review.replaceAll('{PR_NUMBER}', PR_NUMBER).replaceAll('{timestamp}', timestamp)
+  // The model guesses the repo name from the checkout path; the header is ours to set.
+  review = review.replace(/^## 🔎 Code Review — .*$/m, `## 🔎 Code Review — ${REPO}#${PR_NUMBER}`)
 
   // REVIEW_OUT: also write the review to disk (eval harness). DRY_RUN: never post.
   if (process.env.REVIEW_OUT) {
