@@ -7,12 +7,23 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // ── Usage accounting ────────────────────────────────────────────────────────
 // Every request is tagged (console "user_id" column) and its usage is logged;
 // on exit the run prints a cost line (::notice) and a table in the Actions
-// Summary tab. Prices: Opus 5 list, USD per million tokens.
-const PRICE = { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
+// Summary tab. Prices are list, USD per million tokens, keyed by the model
+// the API reports back — a run may mix models.
+const PRICES = {
+  'claude-opus-5': { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 },
+  'claude-sonnet-5': { input: 2, output: 10, cache_write: 2.5, cache_read: 0.2 },
+}
+// One-shot generation (description, QA bot, QA human) is format-driven and was
+// validated on Sonnet 5 — the ten manual QA extractions that shaped the
+// features: schema all ran on it. The review loop is judgment-heavy
+// (adversarial verification, call-chain tracing) and stays on Opus 5 until a
+// measured Sonnet run on known ground truth says otherwise.
+const MODEL_ONESHOT = 'claude-sonnet-5'
+const MODEL_AGENTIC = 'claude-opus-5'
 const TASK = path.basename(process.argv[1] ?? '', '.js').replace(/^generate-/, '') || 'unknown'
 export const REQUEST_TAG = `${process.env.REPO ?? 'local'}${process.env.PR_NUMBER ? `#${process.env.PR_NUMBER}` : ''}:${TASK}`
 
-const totals = { requests: 0, input: 0, output: 0, cache_write: 0, cache_read: 0 }
+const totals = { requests: 0, input: 0, output: 0, cache_write: 0, cache_read: 0, cost: 0, models: new Set() }
 
 function record(message) {
   const u = message.usage ?? {}
@@ -22,27 +33,28 @@ function record(message) {
     cache_write: u.cache_creation_input_tokens ?? 0,
     cache_read: u.cache_read_input_tokens ?? 0,
   }
+  const price = PRICES[message.model] ?? PRICES[MODEL_AGENTIC]
+  const cost =
+    (row.input * price.input + row.output * price.output + row.cache_write * price.cache_write + row.cache_read * price.cache_read) / 1e6
   totals.requests++
+  totals.cost += cost
+  totals.models.add(message.model)
   for (const k of Object.keys(row)) totals[k] += row[k]
   console.log(
-    `[claude] req ${totals.requests}: in=${row.input} out=${row.output} cache_write=${row.cache_write} cache_read=${row.cache_read} stop=${message.stop_reason}`
+    `[claude] req ${totals.requests} (${message.model}): in=${row.input} out=${row.output} cache_write=${row.cache_write} cache_read=${row.cache_read} stop=${message.stop_reason} $${cost.toFixed(4)}`
   )
 }
 
 export function usageSummary() {
-  const cost =
-    (totals.input * PRICE.input +
-      totals.output * PRICE.output +
-      totals.cache_write * PRICE.cache_write +
-      totals.cache_read * PRICE.cache_read) /
-    1e6
-  const line = `${totals.requests} req · in ${totals.input.toLocaleString('en-US')} · out ${totals.output.toLocaleString('en-US')} · cache w/r ${totals.cache_write.toLocaleString('en-US')}/${totals.cache_read.toLocaleString('en-US')} · $${cost.toFixed(4)}`
+  const cost = totals.cost
+  const models = [...totals.models].join(', ') || '-'
+  const line = `${models} · ${totals.requests} req · in ${totals.input.toLocaleString('en-US')} · out ${totals.output.toLocaleString('en-US')} · cache w/r ${totals.cache_write.toLocaleString('en-US')}/${totals.cache_read.toLocaleString('en-US')} · $${cost.toFixed(4)}`
   const markdown = [
     `### Claude usage — \`${REQUEST_TAG}\``,
     '',
-    '| Requests | Input | Output | Cache write | Cache read | **Cost (USD)** |',
-    '|---|---|---|---|---|---|',
-    `| ${totals.requests} | ${totals.input.toLocaleString('en-US')} | ${totals.output.toLocaleString('en-US')} | ${totals.cache_write.toLocaleString('en-US')} | ${totals.cache_read.toLocaleString('en-US')} | **$${cost.toFixed(4)}** |`,
+    '| Model | Requests | Input | Output | Cache write | Cache read | **Cost (USD)** |',
+    '|---|---|---|---|---|---|---|',
+    `| ${models} | ${totals.requests} | ${totals.input.toLocaleString('en-US')} | ${totals.output.toLocaleString('en-US')} | ${totals.cache_write.toLocaleString('en-US')} | ${totals.cache_read.toLocaleString('en-US')} | **$${cost.toFixed(4)}** |`,
     '',
   ].join('\n')
   return { cost, line, markdown }
@@ -65,7 +77,7 @@ process.on('exit', () => {
 // belt-and-braces backstop.
 export async function ask(systemPrompt, userPrompt, maxTokens = 8000) {
   const message = await client.messages.create({
-    model: 'claude-opus-5',
+    model: MODEL_ONESHOT,
     max_tokens: maxTokens,
     thinking: { type: 'disabled' },
     system: systemPrompt,
@@ -133,7 +145,7 @@ export async function askWithTools(systemPrompt, userPrompt, { tools, execute },
 
   for (let i = 0; i < maxIterations; i++) {
     const message = await client.messages.create({
-      model: 'claude-opus-5',
+      model: MODEL_AGENTIC,
       max_tokens: maxTokens,
       system,
       tools,
