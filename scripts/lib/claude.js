@@ -13,13 +13,13 @@ const PRICES = {
   'claude-opus-5': { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 },
   'claude-sonnet-5': { input: 2, output: 10, cache_write: 2.5, cache_read: 0.2 },
 }
-// One-shot generation (description, QA bot, QA human) is format-driven and was
-// validated on Sonnet 5 — the ten manual QA extractions that shaped the
-// features: schema all ran on it. The review loop is judgment-heavy
-// (adversarial verification, call-chain tracing) and stays on Opus 5 until a
-// measured Sonnet run on known ground truth says otherwise.
+// Everything runs on Sonnet 5 (decision 2026-09-09, cost: the review loop
+// measured $1.82 cached on Opus vs ~$0.80 projected on Sonnet). The two
+// constants stay separate so the review loop can be flipped back alone if the
+// eval harness shows Sonnet losing known findings. Reference Opus review of
+// mademoiselleculotte#18 (cached) kept in the session scratchpad for comparison.
 const MODEL_ONESHOT = 'claude-sonnet-5'
-const MODEL_AGENTIC = 'claude-opus-5'
+const MODEL_AGENTIC = 'claude-sonnet-5'
 const TASK = path.basename(process.argv[1] ?? '', '.js').replace(/^generate-/, '') || 'unknown'
 export const REQUEST_TAG = `${process.env.REPO ?? 'local'}${process.env.PR_NUMBER ? `#${process.env.PR_NUMBER}` : ''}:${TASK}`
 
