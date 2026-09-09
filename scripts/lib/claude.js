@@ -1,6 +1,61 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { appendFileSync } from 'node:fs'
+import path from 'node:path'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// ── Usage accounting ────────────────────────────────────────────────────────
+// Every request is tagged (console "user_id" column) and its usage is logged;
+// on exit the run prints a cost line (::notice) and a table in the Actions
+// Summary tab. Prices: Opus 5 list, USD per million tokens.
+const PRICE = { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
+const TASK = path.basename(process.argv[1] ?? '', '.js').replace(/^generate-/, '') || 'unknown'
+export const REQUEST_TAG = `${process.env.REPO ?? 'local'}${process.env.PR_NUMBER ? `#${process.env.PR_NUMBER}` : ''}:${TASK}`
+
+const totals = { requests: 0, input: 0, output: 0, cache_write: 0, cache_read: 0 }
+
+function record(message) {
+  const u = message.usage ?? {}
+  const row = {
+    input: u.input_tokens ?? 0,
+    output: u.output_tokens ?? 0,
+    cache_write: u.cache_creation_input_tokens ?? 0,
+    cache_read: u.cache_read_input_tokens ?? 0,
+  }
+  totals.requests++
+  for (const k of Object.keys(row)) totals[k] += row[k]
+  console.log(
+    `[claude] req ${totals.requests}: in=${row.input} out=${row.output} cache_write=${row.cache_write} cache_read=${row.cache_read} stop=${message.stop_reason}`
+  )
+}
+
+export function usageSummary() {
+  const cost =
+    (totals.input * PRICE.input +
+      totals.output * PRICE.output +
+      totals.cache_write * PRICE.cache_write +
+      totals.cache_read * PRICE.cache_read) /
+    1e6
+  const line = `${totals.requests} req · in ${totals.input.toLocaleString('en-US')} · out ${totals.output.toLocaleString('en-US')} · cache w/r ${totals.cache_write.toLocaleString('en-US')}/${totals.cache_read.toLocaleString('en-US')} · $${cost.toFixed(4)}`
+  const markdown = [
+    `### Claude usage — \`${REQUEST_TAG}\``,
+    '',
+    '| Requests | Input | Output | Cache write | Cache read | **Cost (USD)** |',
+    '|---|---|---|---|---|---|',
+    `| ${totals.requests} | ${totals.input.toLocaleString('en-US')} | ${totals.output.toLocaleString('en-US')} | ${totals.cache_write.toLocaleString('en-US')} | ${totals.cache_read.toLocaleString('en-US')} | **$${cost.toFixed(4)}** |`,
+    '',
+  ].join('\n')
+  return { cost, line, markdown }
+}
+
+process.on('exit', () => {
+  if (!totals.requests) return
+  const { line, markdown } = usageSummary()
+  console.log(`::notice title=Claude usage ${REQUEST_TAG}::${line}`)
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    try { appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown) } catch {}
+  }
+})
 
 // Opus 5 thinks by default. Disabling it is only accepted at effort `high` or
 // below (400 at xhigh/max) — we leave effort at its default `high`.
@@ -15,7 +70,9 @@ export async function ask(systemPrompt, userPrompt, maxTokens = 8000) {
     thinking: { type: 'disabled' },
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
+    metadata: { user_id: REQUEST_TAG },
   })
+  record(message)
 
   // Safety classifiers can decline a request: HTTP 200 with an empty/partial
   // content array. Check before reading content.
@@ -72,7 +129,9 @@ export async function askWithTools(systemPrompt, userPrompt, { tools, execute },
       system: systemPrompt,
       tools,
       messages,
+      metadata: { user_id: REQUEST_TAG },
     })
+    record(message)
 
     if (message.stop_reason === 'refusal') {
       const category = message.stop_details?.category ?? 'unknown'
