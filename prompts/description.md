@@ -23,7 +23,7 @@ Tu reçois le titre de la PR, ce que le dev a écrit dans le body (ticket, Figma
 
 **À savoir avant de tester** — <1 à 3 puces, uniquement le non-évident, en langage humain : « la fonction est pilotée par un réglage du thème, actuellement activé » / « ne concerne que les produits pour lesquels une redirection a été configurée ». Décris l'effet d'un réglage, jamais son nom technique. Rien de non-évident → omets la section.>
 
-**Toute la description tient en moins de 150 mots.** Si tu dépasses, tu as décrit le comment au lieu du quoi : coupe.
+**Toute la description tient en moins de 250 mots.** Si tu dépasses, tu as décrit le comment au lieu du quoi : coupe.
 
 ## Exemple — la même PR, avant / après
 
