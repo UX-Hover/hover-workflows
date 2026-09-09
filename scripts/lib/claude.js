@@ -19,7 +19,7 @@ const PRICES = {
 // eval harness shows Sonnet losing known findings. Reference Opus review of
 // mademoiselleculotte#18 (cached) kept in the session scratchpad for comparison.
 const MODEL_ONESHOT = 'claude-sonnet-5'
-const MODEL_AGENTIC = 'claude-sonnet-5'
+const MODEL_AGENTIC = 'claude-opus-5'
 const TASK = path.basename(process.argv[1] ?? '', '.js').replace(/^generate-/, '') || 'unknown'
 export const REQUEST_TAG = `${process.env.REPO ?? 'local'}${process.env.PR_NUMBER ? `#${process.env.PR_NUMBER}` : ''}:${TASK}`
 
