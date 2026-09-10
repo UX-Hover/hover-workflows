@@ -1,0 +1,55 @@
+name: QA dry run
+
+# Generates the bot plan and the human checklist for any PR WITHOUT posting or
+# labelling, and uploads both. Use it to check a prompt change before it reaches
+# a real PR.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: owner/repo of the PR (e.g. UX-Hover/rez-energy-v2)
+        required: true
+      pr:
+        description: PR number
+        required: true
+
+jobs:
+  dry-run:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - name: PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view "${{ inputs.pr }}" --repo "${{ inputs.repo }}" --json headRefName \
+            --jq '"head=" + .headRefName' >> "$GITHUB_OUTPUT"
+      - name: Generate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ inputs.repo }}
+          PR_NUMBER: ${{ inputs.pr }}
+          HEAD_REF: ${{ steps.pr.outputs.head }}
+          DRY_RUN: '1'
+          QA_OUT: ${{ github.workspace }}/qa-out
+        run: node scripts/generate-qa.js
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Human checklist ($(wc -w < qa-out/human.md) words)"
+            cat qa-out/human.md
+            echo; echo "## Bot plan"
+            cat qa-out/bot.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-${{ inputs.pr }}
+          path: qa-out/

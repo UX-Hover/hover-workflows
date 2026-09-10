@@ -596,6 +596,36 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
 
   const timestamp = new Date().toISOString()
 
+  // ── Human-facing variant ────────────────────────────────────────────────
+  // Same data, different framing. Two reasons the human checklist toured the
+  // whole theme: the shared prompt told it to "state every one explicitly" and
+  // to "enumerate every one of these" (imperatives written for the bot), and the
+  // template list is a blast-radius signal that reads like a test list — a
+  // changed product-card section is included by 28 templates on rez-energy.
+  const changedTemplatePaths = new Set(
+    changedFiles.map((f) => f.filename).filter((p) => /templates\/.*\.json$/.test(p))
+  )
+  const editedByPr = templateMatches.filter((m) => changedTemplatePaths.has(m.templatePath))
+  const untouched = [
+    ...new Map(
+      templateMatches.filter((m) => !changedTemplatePaths.has(m.templatePath)).map((m) => [m.templatePath, m])
+    ).values(),
+  ]
+  const templateLine = (m) => `\`${m.templatePath}\`${m.viewSuffix ? ` (view: ${m.viewSuffix})` : ' (default)'}`
+  const humanTemplatesContext = [
+    editedByPr.length
+      ? `Edited by this PR — the feature lives here:\n${editedByPr.map((m) => `- ${templateLine(m)}`).join('\n')}`
+      : 'Edited by this PR: (none — this PR changes no template)',
+    untouched.length
+      ? `Also include a changed section but are NOT edited by this PR — blast radius, NOT pages to test (${untouched.length}): ${untouched
+          .slice(0, 8)
+          .map((m) => m.templatePath.split('/').pop())
+          .join(', ')}${untouched.length > 8 ? `, +${untouched.length - 8}` : ''}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
   const userPrompt = [
     `PR title: ${pr.title}`,
     `PR number: ${prNumber}`,
@@ -635,6 +665,45 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
     globalContext || '(none — every changed section is template-bound)',
   ].join('\n')
 
+  const humanUserPrompt = [
+    `PR title: ${pr.title}`,
+    `PR number: ${prNumber}`,
+    `Head ref: ${headRef}`,
+    `Timestamp: ${timestamp}`,
+    '',
+    'PR body:',
+    pr.body || '(empty)',
+    '',
+    'Preview links provided by the developer (the ONLY allowed source of URLs — none provided means: say the dev will send the link):',
+    qaContext,
+    '',
+    'Changed files:',
+    fileList,
+    '',
+    'Diff:',
+    '```diff',
+    diff,
+    '```',
+    '',
+    'Related file context:',
+    relatedFilesContext || '(none)',
+    '',
+    'Theme-customizer surface — settings of the changed sections/blocks (your agenda: this is what the runner cannot touch):',
+    schemaSettingsContext || '(none found)',
+    '',
+    'Merchant-filled fields referenced by the code — each can be empty on a real product:',
+    metafieldRefs.size ? [...metafieldRefs].map((r) => `- ${r}`).join('\n') : '(none found)',
+    '',
+    'Templates — scope signal, NOT a list of pages to test:',
+    humanTemplatesContext || '(none found)',
+    '',
+    'Global sections (render on every page using that layout):',
+    globalContext || '(none — every changed section is template-bound)',
+    '',
+    'Behavioural facts extracted from the code (context only — the runner owns these):',
+    factsContext || '(no behavioural code found in the changed component set)',
+  ].join('\n')
+
   // Fail loudly, not silently: past ~190k tokens the API rejects the request,
   // and a 413 with this line in the log beats a truncated theme any day.
   const approxTokens = Math.round(userPrompt.length / 4)
@@ -656,6 +725,7 @@ export async function buildQaUserPrompt({ repo, prNumber, headRef, pr, diff, cha
 
   return {
     userPrompt,
+    humanUserPrompt,
     timestamp,
     qaBlock,
     codeCorpus,

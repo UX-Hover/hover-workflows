@@ -1,4 +1,4 @@
-name: Generate PR QA Steps
+name: Generate PR QA (bot plan + human checklist)
 on:
   workflow_call:
     secrets:
@@ -32,7 +32,7 @@ jobs:
       - run: npm ci
         working-directory: .hover-workflows
 
-      - run: node scripts/generate-qa-bot.js
+      - run: node scripts/generate-qa.js
         working-directory: .hover-workflows
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

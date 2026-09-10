@@ -19,14 +19,14 @@ UX-Hover/hover-workflows/          ← this repo
 │   └── pr-qa.yml                  ← reusable workflow (workflow_call) — same-org repos only
 ├── scripts/
 │   ├── generate-description.js
-│   ├── generate-qa-human.js
-│   ├── generate-qa-bot.js
+│   ├── generate-qa.js             ← bot plan + human checklist, one run
 │   └── lib/
 │       ├── github.js              ← GitHub REST API calls (native fetch)
 │       ├── claude.js              ← Claude API wrapper
 │       └── qa-context.js          ← shared PR/diff/schema/metafield/template gathering
 ├── prompts/
 │   ├── description.md
+│   ├── qa-common.md               ← Hover/store context + scope rules, shared by both QA passes
 │   ├── qa-human.md
 │   └── qa-bot.md
 ├── examples/client-repo/.github/workflows/hover-automation.yml             ← same-org caller
@@ -77,17 +77,27 @@ to remove "description" so it can't re-trigger itself
 PR body is updated. Done — no human ever leaves the PR page.
 ```
 
-The two QA paths share the same context-gathering step (`scripts/lib/qa-context.js` fetches
-changed files, related snippets, section schemas, metafield references, and templates — see
-"Limits" below) but produce two separate comments, triggered independently:
+**One label produces both QA artifacts.** `ready for qa` → `pr-qa.yml` → `generate-qa.js`:
 
-- `ready for human qa` → triggers `pr-qa-human.yml`, runs `generate-qa-human.js`, posts the
-  `👤 Checklist QA humaine` comment, adds the `human-qa-generated` label.
-- `ready for qa` → triggers `pr-qa.yml`, runs `generate-qa-bot.js`, posts the
-  `🤖 Instructions QA Bot` YAML comment, adds the `qa-generated` label.
+1. Context is gathered once (`scripts/lib/qa-context.js`: changed files, related snippets,
+   section schemas, metafield references, templates — see "Limits" below).
+2. **Bot plan** — `prompts/qa-bot.md`, validated by `lint-qa-yaml.js`, one retry, hard fail if
+   still invalid. Prompt and context unchanged from the standalone version: the runner's plan
+   must not move.
+3. **Human checklist** — `prompts/qa-common.md` + `prompts/qa-human.md`, and it receives the
+   validated bot plan. It writes only what a runner cannot do: theme customizer, visual
+   judgement, markets/languages, business coherence, and the plan's `regression` doubts in
+   plain French. Validated by `lint-qa-human.js` (technical vocabulary, preview explainers,
+   template enumeration, journey count, 900-word cap), one retry, non-fatal.
+4. Both comments are posted, previous ones removed, `qa-generated` + `human-qa-generated` added.
 
-Both can be added to the same PR independently, in any order — each only ever posts its own
-comment and only ever touches its own label.
+`ready for human qa` still works — `pr-qa-human.yml` is a deprecated alias running the same
+script. It is kept because every caller repo references it by path; deleting the file would
+invalidate their whole workflow. Drop the `pr-qa-human` job from caller repos when convenient.
+
+Check a prompt change before it touches a PR with the **QA dry run** workflow
+(`workflow_dispatch`, inputs `repo` + `pr`): it generates both artifacts, posts nothing, and
+uploads them.
 
 **Why this works:** `workflow_call` (a "reusable workflow") is GitHub's mechanism for one repo
 to invoke a workflow defined in another repo, but it only resolves if the called repo is private
@@ -242,11 +252,9 @@ npm ci
 GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 \
   node scripts/generate-description.js
 
+# Both QA artifacts. DRY_RUN=1 posts nothing; QA_OUT=dir writes bot.md + human.md.
 GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 HEAD_REF=my-branch \
-  node scripts/generate-qa-human.js
-
-GITHUB_TOKEN=... ANTHROPIC_API_KEY=... REPO=org/repo PR_NUMBER=123 HEAD_REF=my-branch \
-  node scripts/generate-qa-bot.js
+  node scripts/generate-qa.js
 ```
 
 ## Runner setup (VPS)

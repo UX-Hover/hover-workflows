@@ -1,4 +1,9 @@
-name: Generate PR Human QA Checklist
+# DEPRECATED — `ready for qa` now generates both the bot plan and the human
+# checklist in one run (scripts/generate-qa.js). This file is kept because every
+# caller repo references it by path: deleting it makes their whole workflow file
+# invalid, which would break description, QA and code review at once. It runs the
+# same consolidated script, so the old label still produces both artifacts.
+name: Generate PR QA (deprecated alias of `ready for qa`)
 on:
   workflow_call:
     secrets:
@@ -32,7 +37,7 @@ jobs:
       - run: npm ci
         working-directory: .hover-workflows
 
-      - run: node scripts/generate-qa-human.js
+      - run: node scripts/generate-qa.js
         working-directory: .hover-workflows
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -5,7 +5,7 @@ const DEVICES = new Set(['desktop', 'mobile', 'both'])
 // Wording that describes the diff instead of the expected user-facing result.
 // Its presence proves the assertion was copied from the changed code rather than
 // derived from intent — the artifact then passes on broken code and fails once fixed.
-const DIFF_REFERENTIAL_RE = new RegExp(
+export const DIFF_REFERENTIAL_RE = new RegExp(
   [
     'nouvelle?\\s+classe',
     'dans\\s+le\\s+diff',
