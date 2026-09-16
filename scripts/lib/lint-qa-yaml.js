@@ -138,6 +138,14 @@ export function lintQaYaml(markdown, { qaBlock = null, codeCorpus = '' } = {}) {
         errors.push(`${at}: \`${key}\` must be a non-empty selector string`)
         continue
       }
+      // Liquid exists in the source, but Shopify renders it before the DOM
+      // reaches querySelector. Source membership alone cannot validate it.
+      if (/\{\{|\{%/.test(sel)) {
+        errors.push(
+          `${at}: \`${key}\` contains unrendered Liquid — choose a stable component class, tag or data attribute from the source; never guess the rendered id or remove the feature to silence this error`
+        )
+        continue
+      }
       if (/#shopify-section-/.test(sel)) {
         errors.push(`${at}: \`${key}\` uses a #shopify-section- instance id — generated per store, unknowable statically; use the component's own mount selector`)
       }
