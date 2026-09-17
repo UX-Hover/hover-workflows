@@ -19,7 +19,7 @@ export const DIFF_REFERENTIAL_RE = new RegExp(
     'hardcod(?:é|ee|ée)s?\\b',
     // Negated forms are scope notes, not certifications: "ne sont PAS modifiés
     // par cette PR" (mademoiselleculotte#18) must pass, "modifiés par cette PR" must not.
-    '(?<!\\bpas\\s)(?<!\\bnon\\s)(?:modifi|ajout|appliqu|introduit)(?:é|ee|ée)s?\\s+(?:dans|par)\\s+(?:cette\\s+|la\\s+)?PR',
+    '(?<!\\bpas\\s)(?<!\\bnon\\s)(?:modifi|ajout|introduit)(?:é|ee|ée)s?\\s+(?:dans|par)\\s+(?:cette\\s+|la\\s+)?PR',
     'valeurs?\\s+(?:actuelles?|du\\s+diff)',
   ].join('|'),
   'i'

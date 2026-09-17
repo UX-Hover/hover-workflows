@@ -42,6 +42,13 @@ test('still rejects invented routing selectors', () => {
   assert.ok(lintFeature({ needs: '.invented-component' }, '<div class="real-component">').some(e => e.includes('does not appear')))
 })
 
+test('autorise un doute visuel sur une classe appliquee', () => {
+  const errors = lintFeature({
+    regression: ['La classe appliquee a l image de contact ne semble pas stylee correctement — verifier son habillage.'],
+  })
+  assert.deepEqual(errors, [])
+})
+
 test('still rejects structured actions in the natural-language contract', () => {
   assert.ok(lintFeature({ steps: [{ action: 'click', selector: '.buy' }] }).some(e => e.includes('plain French sentence')))
 })
